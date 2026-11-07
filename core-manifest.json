@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "recommended": "1.06",
+  "releases": [
+    {
+      "version": "1.06",
+      "url": "https://download.natpierce.cn/linux/natpierce-arm64-v1.06.tar.gz",
+      "sha256": "7edafed7d1093c27c8ce20458e72ce060243c2204ecdba23aeb6e17ea89cef78"
+    }
+  ]
+}
