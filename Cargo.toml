@@ -1,0 +1,29 @@
+[package]
+name = "natpierce-rs"
+version = "0.2.0"
+edition = "2021"
+authors = ["Chimiko"]
+license = "MIT"
+description = "KernelSU resident NATPierce manager with a Material Design WebUI"
+repository = "https://github.com/Mr-Goodname/natpierce-kernelsu"
+
+[[bin]]
+name = "npctl"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha1 = "0.10"
+sha2 = "0.10"
+getrandom = "0.2"
+libc = "0.2"
+encoding_rs = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

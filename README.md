@@ -8,7 +8,7 @@
 
 当前版本 **v0.2.0**。本仓库开源 Rust 管理服务、Android 网络辅助逻辑、模块脚本和 WebUI。皎月连的登录、P2P 打洞与隧道协议由**未修改的官方核心**完成；本项目没有将私有协议完整重写为 Rust。官方核心不进入 GitHub 源码或 Release 安装包，由使用者在 WebUI 中从官网下载。
 
-![真机 KernelSU WebUI，默认青色主题](docs/screenshots/webui.png)
+![真机 KernelSU WebUI，采用管理器动态配色](docs/screenshots/webui.png)
 
 ## 为什么做这个模块
 
@@ -29,7 +29,7 @@
 需要 ARM64 Android、KernelSU 或兼容管理器的 root 权限、内核 `/dev/net/tun`，以及可用的模块 WebUI。首次下载核心需要手机能够访问皎月连官网下载站。
 
 1. 从本仓库 [Releases](https://github.com/Mr-Goodname/natpierce-kernelsu/releases) 下载 `natpierce_rs_v0.2.0.zip`，在 KernelSU 模块页面安装，按管理器提示重启。
-2. 打开模块 WebUI，进入“设置 → 官方核心 → 下载官方核心”。缺少核心时首页也会显示下载卡。下载完成且 SHA256 校验通过后，管理服务才能运行官方核心。
+2. 打开模块 WebUI，在连接首页的“准备官方核心”卡中点击“下载官方核心”；也可进入“设置 → 官方核心”下载。下载完成且 SHA256 校验通过后，管理服务才能运行官方核心。
 3. 登录皎月连账号。输入对方识别码、连接密码，或选择同账号的在线设备；也可以在服务端页面配置手机接受连接。
 4. 在设置中启用开机自动启动、自动恢复连接，并选择启动后的模式。
 
@@ -39,14 +39,22 @@
 
 ### 官方核心来源
 
-| 项目 | 固定值 |
+| 项目 | 本次内置验证来源 |
 | --- | --- |
 | 官方版本 | Linux ARM64 v1.06 |
 | 官网 | [natpierce.cn](https://www.natpierce.cn/) |
 | 下载地址 | [natpierce-arm64-v1.06.tar.gz](https://download.natpierce.cn/linux/natpierce-arm64-v1.06.tar.gz) |
 | 解压后 `natpierce` 的 SHA256 | `7edafed7d1093c27c8ce20458e72ce060243c2204ecdba23aeb6e17ea89cef78` |
 
-上述哈希对应核心可执行文件，**不是压缩包哈希**。模块校验固定版本的原始字节，不接受补丁版或未知核心。官方下载内容发生变化时，需要维护者核对并更新版本与哈希。
+上述哈希对应核心可执行文件，**不是压缩包哈希**。v1.06 是内置回退版本，不代表只能永久使用这个版本。模块只安装版本清单认可且校验通过的原始核心。
+
+### 官网更新后如何升级
+
+在“诊断 → 官方核心”点击“检查核心更新”，模块会读取本仓库的 [core-manifest.json](core-manifest.json)，显示当前版本和推荐版本。有新推荐版本时，再点击“更新官方核心”。检查和安装均由使用者主动触发；现有核心不会被后台自动替换。下载仍来自皎月连官网，GitHub 只提供版本、官方下载地址和校验值。
+
+核心清单可以独立更新，不需要重新发布整个模块。维护者从官网下载新版本，解压核对静态 ARM64 ELF、计算原始可执行文件的 SHA256，并验证兼容性后，在清单中加入版本、下载地址与**解压后可执行文件**的 SHA256，再修改 `recommended`。模块严格核对版本对应的 `https://download.natpierce.cn/linux/natpierce-arm64-v<版本>.tar.gz` 地址，拒绝其他来源、缺失校验值或无效清单。模块会保留已认可版本的信息；下载或校验失败不会覆盖当前核心。
+
+检查更新需要手机提供支持 HTTPS 限制的 `curl`。GitHub 清单暂时不可用时，已安装的核心继续运行；没有可用缓存的首次安装仍可使用内置的 v1.06 来源，下载内置核心也支持 KernelSU BusyBox 的 `wget`。
 
 ## 运行与数据保存
 
@@ -58,6 +66,8 @@
   core/
     natpierce                  使用者从官网下载的原始核心
     data/config                官方加密 MAC、PCID 等身份记录
+    manifest-cache.json        手动检查取得的版本清单
+    installation-receipt.json 已校验安装版本的本地记录
   run/                         私有控制 socket、PID 与状态
   logs/                        管理服务、核心和看护日志
 ```
@@ -85,7 +95,7 @@ pwsh -File .\build.ps1 -Tests -Toolchain 1.99.1-x86_64-pc-windows-gnu
 构建输出位于 `dist/`：
 
 - `natpierce_rs_v0.2.0.zip`：可安装模块，包含 Rust 程序、脚本、WebUI 与许可证，**不包含官方核心**。
-- `natpierce_rs_v0.2.0_source.zip`：源码、锁定依赖、模块文本文件、构建脚本和文档。
+- `natpierce_rs_v0.2.0_source.zip`：源码、依赖锁文件、模块文本文件、构建脚本和文档。
 - `natpierce_rs_v0.2.0_SHA256SUMS.txt`：压缩包的 SHA256。
 
 发布按文件白名单打包，统一换行、文件权限和 ZIP 时间戳。研究资料、旧原型、测试账号、抓包、编译器、依赖缓存和设备数据均不发布。

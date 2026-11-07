@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101617">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>皎月连 · KernelSU</title>
+  <link id="manager-colors" rel="stylesheet" href="internal/colors.css">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+  <symbol id="i-connect" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 .1l3-3a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7-.1l-3 3a5 5 0 0 0 7 7l2-2"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M12 6.5h5M12 17.5h5"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-.6 2-1.6.9-2-.5-2 3.4 1.5 1.5v1.8L2.8 14l2 3.4 2-.5 1.6.9.6 2.2h4l.6-2.2 1.6-.9 2 .5 2-3.4-1.5-1.9v-1.8L19.2 9l-2-3.4-2 .5-1.6-.9L13 3Z"/><circle cx="11" cy="11.5" r="3"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v15h18V5a2 2 0 0 0-2-2h-3M8 2h8v4H8ZM7 10h10M7 14h10M7 18h6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-1 7M20 3v7h-7"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14a9 9 0 0 1-10.5-10.5A9 9 0 1 0 20.5 14Z"/></symbol>
+</defs></svg>
+<div class="app">
+  <header class="appbar">
+    <div class="brand"><span class="brand-icon"><svg class="icon"><use href="#i-moon"/></svg></span><div><h1>皎月连</h1><p>KernelSU · 常驻组网</p></div></div>
+    <button class="icon-button" id="refresh" aria-label="刷新运行状态"><svg class="icon"><use href="#i-refresh"/></svg></button>
+  </header>
+  <div class="notice" id="bridge-notice" role="status" hidden>请在 KernelSU 管理器中打开此页面。</div>
+  <main>
+    <section class="view" id="view-connect" aria-labelledby="nav-connect">
+      <article class="card first core-download-card" data-core-setup hidden><div class="card-heading"><h2>准备官方核心</h2><span class="chip" data-core-phase>尚未安装</span></div><p class="description">首次使用时，从皎月连官网下载官方 Linux ARM64 核心。模块未捆绑核心文件，下载后会校验原始文件。</p><progress class="download-progress" data-core-progress hidden aria-label="官方核心下载进度"></progress><p class="download-state" data-core-state role="status"></p><p class="error-text" data-core-error hidden></p><button class="button filled full" type="button" data-core-download>下载官方核心</button><p class="form-note">官方来源：download.natpierce.cn · 版本 <span data-core-version>读取中</span><br>准备完成后，会沿用已保存的登录和连接设置。</p></article>
+      <article class="hero" id="hero">
+        <div class="hero-top"><span class="status-label"><span class="dot" id="status-dot"></span><span id="status-label">读取状态</span></span><span class="chip" id="role-chip">待机</span></div>
+        <h2 id="status-title">等待模块响应</h2>
+        <p id="status-detail">正在读取登录与连接状态。</p>
+        <div class="hero-actions"><button class="button filled" id="primary-action">登录账号</button><button class="button tonal" id="disconnect" hidden>断开连接</button></div>
+      </article>
+      <div class="metrics"><div><span>虚拟 IP</span><strong id="virtual-ip">—</strong></div><div><span>接收 / 发送</span><strong id="traffic">—</strong></div></div>
+      <article class="card" id="account-nudge"><div class="card-heading"><h2>一次登录，持续在线</h2></div><p class="description">登录状态保存在模块中，关闭管理器后服务继续运行。</p><button class="button tonal full" data-login>登录皎月连</button></article>
+      <article class="card"><div class="card-heading"><h2>在线设备</h2><span class="count" id="peer-count">0 台</span></div><p class="description">连接同一账号下的在线设备。</p><div class="device-list" id="peers"><p class="empty">登录后显示在线设备</p></div></article>
+      <article class="card" id="code-card"><div class="card-heading"><h2>识别码连接</h2></div><form id="connect-form">
+        <label class="field"><span>对方识别码</span><input id="client-code" name="code" type="text" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" placeholder="8 位数字" autocomplete="off" required></label>
+        <label class="field"><span>连接密码</span><input id="client-password" name="password" type="password" maxlength="128" placeholder="对方设置的连接密码" autocomplete="off"></label>
+        <button class="button filled full" type="submit">连接设备</button>
+      </form><p class="form-note">连接结果会在上方状态卡中显示。</p></article>
+    </section>
+    <section class="view" id="view-server" aria-labelledby="nav-server" hidden>
+      <article class="hero compact"><div class="hero-top"><span class="status-label"><span class="dot" id="server-dot"></span><span id="server-label">服务端未启动</span></span><span class="chip" id="client-count">0 台接入</span></div><h2 class="code" id="server-code">— — — —</h2><p>启动服务端后，用识别码让其他设备连接本机。</p></article>
+      <article class="card"><div class="card-heading"><h2>服务端设置</h2></div><form id="server-form">
+        <label class="field"><span>连接密码</span><input id="server-password" type="password" maxlength="128" placeholder="设置连接本机的密码" autocomplete="new-password" required></label>
+        <label class="field"><span>Web 访问密码</span><input id="server-web-password" type="password" minlength="6" maxlength="20" placeholder="6–20 位" autocomplete="new-password" required></label>
+        <label class="field"><span>局域网地址 <span class="optional">可选</span></span><input id="server-lan" type="text" maxlength="15" placeholder="例如 192.168.1.10" autocomplete="off"><small>按需要填写本机的局域网 IPv4 地址。</small></label>
+        <button class="button filled full" type="submit">保存并启动服务端</button>
+      </form><button class="button tonal full" id="server-stop">停止服务端</button></article>
+      <article class="card"><div class="card-heading"><h2>已连接客户端</h2></div><div class="device-list" id="server-clients"><p class="empty">暂无设备接入</p></div></article>
+    </section>
+    <section class="view" id="view-settings" aria-labelledby="nav-settings" hidden>
+      <article class="card first"><div class="card-heading"><h2>账号</h2><span class="chip" id="account-status">未登录</span></div><p class="account-name" id="account-name">未登录皎月连</p><p class="description">模块升级保留账号与组网设置。</p><div class="button-row"><button class="button tonal" data-login>登录 / 切换账号</button><button class="button text danger" id="logout">退出登录</button></div></article>
+      <article class="card core-download-card" data-core-setup hidden><div class="card-heading"><h2>官方核心</h2><span class="chip" data-core-phase>尚未安装</span></div><p class="description">下载官方网站提供的 Linux ARM64 原始核心。模块没有捆绑官方程序；只有你点击按钮时才下载。</p><progress class="download-progress" data-core-progress hidden aria-label="官方核心下载进度"></progress><p class="download-state" data-core-state role="status"></p><p class="error-text" data-core-error hidden></p><button class="button filled full" type="button" data-core-download>下载官方核心</button><p class="form-note">固定来源：download.natpierce.cn · 版本 <span data-core-version>读取中</span><br>下载后校验官方 SHA256，成功后自动恢复已保存设置。</p></article>
+      <article class="card"><div class="card-heading"><h2>外观</h2><button class="text-button" id="theme-reset" type="button">恢复默认</button></div><label class="field"><span>主题配色</span><select id="theme-source"><option value="cyan">默认青色</option><option value="system">管理器动态配色</option><option value="custom">自定义颜色</option></select></label><div id="theme-custom" hidden><label class="field"><span>自定义主题色</span><span class="color-row"><input type="color" id="theme-color" value="#00838f" aria-label="选择主题颜色"><input type="text" id="theme-hex" value="#00838f" maxlength="7" pattern="#[0-9a-fA-F]{6}" autocomplete="off" spellcheck="false" aria-label="主题颜色十六进制值"></span><small>选择颜色，或输入 #RRGGBB。</small></label><div class="color-presets" role="group" aria-label="主题色预设"><button type="button" data-color="#00838f" class="preset-cyan" aria-label="青色"></button><button type="button" data-color="#1565c0" class="preset-blue" aria-label="蓝色"></button><button type="button" data-color="#2e7d32" class="preset-green" aria-label="绿色"></button><button type="button" data-color="#ef6c00" class="preset-orange" aria-label="橙色"></button><button type="button" data-color="#ad1457" class="preset-pink" aria-label="粉色"></button></div></div><label class="field"><span>明暗模式</span><select id="theme-mode"><option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label><p class="form-note" id="theme-hint">外观设置保存在本机，修改后立即生效。</p></article>
+      <article class="card"><div class="card-heading"><h2>自动运行</h2></div><form id="settings-form">
+        <label class="switch-row"><span><strong>开机自动启动</strong><small>系统启动后恢复后台服务</small></span><span class="switch"><input type="checkbox" id="autostart"><span class="switch-track"></span></span></label>
+        <label class="switch-row"><span><strong>自动恢复连接</strong><small>网络恢复后重连已保存的设备</small></span><span class="switch"><input type="checkbox" id="auto-connect"><span class="switch-track"></span></span></label>
+        <label class="field"><span>设备名称</span><input id="device-name" type="text" maxlength="64" placeholder="例如 我的手机" autocomplete="off"></label>
+        <label class="field"><span>启动后的模式</span><select id="startup-role"><option value="idle">待机</option><option value="client">客户端</option><option value="server">服务端</option></select></label>
+        <button class="button filled full" type="submit">保存设置</button>
+      </form></article>
+      <article class="card"><div class="card-heading"><h2>后台服务</h2><span class="chip" id="daemon-state">读取中</span></div><dl class="key-values"><div><dt>核心进程</dt><dd id="core-state">—</dd></div><div><dt>运行时间</dt><dd id="uptime">—</dd></div><div><dt>本机地址</dt><dd id="local-ip">—</dd></div></dl><div class="button-row"><button class="button tonal" id="service-start">启动服务</button><button class="button tonal" id="service-restart">重启服务</button></div><button class="button text danger full" id="service-stop">停止后台服务</button></article>
+      <p class="footer-note">皎月连 · Rust 守护模块<br>账号密码仅通过本机 KernelSU 接口提交。</p>
+    </section>
+    <section class="view" id="view-logs" aria-labelledby="nav-logs" hidden>
+      <article class="card first"><details class="core-details"><summary><span>官方核心</span><span class="chip" id="core-info-status">读取中</span></summary><dl class="key-values"><div><dt>当前版本</dt><dd id="core-info-version">读取中</dd></div><div><dt>可用版本</dt><dd id="core-info-available-version">尚未读取</dd></div><div><dt>文件校验</dt><dd id="core-info-verified">读取中</dd></div><div><dt>来源</dt><dd>download.natpierce.cn</dd></div></dl><div class="button-row core-update-actions"><button class="button tonal" id="core-check-update" type="button">检查核心更新</button><button class="button filled" id="core-update" type="button" hidden>更新官方核心</button></div><progress class="download-progress" id="core-update-progress" hidden aria-label="官方核心下载进度"></progress><p class="download-state" id="core-update-state" role="status">点击检查核心更新，读取推荐版本信息。</p><p class="error-text" id="core-update-error" role="alert" hidden></p><p class="form-note">检查和更新均由你手动发起。更新完成后，后台恢复已保存的登录和连接设置。</p><p class="core-checksum" id="core-info-sha"></p></details></article>
+      <article class="card"><div class="card-heading"><h2>连接诊断</h2><button class="text-button" id="run-doctor">检查</button></div><p class="description">查看核心、虚拟网卡和路由的实际状态。</p><div id="doctor-result" class="diagnostic-empty">点击「检查」获取诊断信息。</div></article>
+      <article class="card"><div class="card-heading"><h2>最近事件</h2></div><p class="event-text" id="last-event">暂无事件</p><p class="error-text" id="last-error" hidden></p></article>
+      <article class="card"><div class="card-heading"><h2>运行日志</h2><button class="text-button" id="refresh-logs">刷新</button></div><div class="segments" role="group" aria-label="日志类型"><button type="button" class="selected" data-log="daemon" aria-pressed="true">守护服务</button><button type="button" data-log="core" aria-pressed="false">连接核心</button></div><pre class="log-box" id="log-output" tabindex="0">点击刷新读取日志。</pre><p class="form-note">显示最近日志，账号密码不会在页面展示。</p></article>
+    </section>
+  </main>
+  <nav class="bottom-nav" aria-label="页面导航">
+    <button id="nav-connect" data-view="connect" class="active" aria-current="page"><span class="nav-icon"><svg class="icon"><use href="#i-connect"/></svg></span><span>连接</span></button>
+    <button id="nav-server" data-view="server"><span class="nav-icon"><svg class="icon"><use href="#i-server"/></svg></span><span>服务端</span></button>
+    <button id="nav-settings" data-view="settings"><span class="nav-icon"><svg class="icon"><use href="#i-settings"/></svg></span><span>设置</span></button>
+    <button id="nav-logs" data-view="logs"><span class="nav-icon"><svg class="icon"><use href="#i-log"/></svg></span><span>诊断</span></button>
+  </nav>
+</div>
+<dialog id="login-dialog" aria-labelledby="login-title"><div class="dialog-heading"><h2 id="login-title">登录皎月连</h2><button class="icon-button" id="close-login" aria-label="关闭登录"><svg class="icon"><use href="#i-close"/></svg></button></div><p class="description">登录后，模块会保存账号并恢复登录状态。</p><form id="login-form"><label class="field"><span>账号</span><input id="login-user" type="text" maxlength="128" placeholder="手机号 / 账号" autocomplete="username" required></label><label class="field"><span>密码</span><input id="login-password" type="password" maxlength="128" autocomplete="current-password" required></label><p class="error-text" id="login-error" role="alert" hidden></p><button class="button filled full" type="submit">登录</button></form></dialog>
+<div class="snackbar" id="snackbar" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

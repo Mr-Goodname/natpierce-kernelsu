@@ -1,0 +1,10 @@
+/research/
+/tools/
+/target/
+/build/
+/dist/
+/module/bin/npctl
+/module/bin/natpierce
+.env
+.env.*
+*.tmp
