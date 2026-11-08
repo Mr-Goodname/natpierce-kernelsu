@@ -4,6 +4,10 @@
 
 [GitHub 仓库](https://github.com/Mr-Goodname/natpierce-kernelsu) · [下载模块](https://github.com/Mr-Goodname/natpierce-kernelsu/releases) · [反馈问题](https://github.com/Mr-Goodname/natpierce-kernelsu/issues)
 
+> **项目仍处于早期测试阶段。** 使用体验可能不好，也可能遇到连不上、断线或自动恢复失败等问题。现有测试只覆盖有限的设备和网络条件，还有很多情况没测。
+>
+> 已收到手机作为服务端连不上的反馈，正在排查。公网连接、移动数据、Wi-Fi 与移动数据切换、不同 NAT 和长期待机等场景尚未充分验证。建议愿意试用和反馈问题的用户再尝试。
+
 把 [皎月连 NATPierce](https://www.natpierce.cn/) 的官方 Linux ARM64 核心运行在 Android root 后台，通过 KernelSU WebUI 管理。保存账号与设备身份，开机恢复登录和连接，关闭管理器后继续组网。
 
 当前版本 **v0.2.0**。本仓库开源 Rust 管理服务、Android 网络辅助逻辑、模块脚本和 WebUI。皎月连的登录、P2P 打洞与隧道协议由**未修改的官方核心**完成；本项目没有将私有协议完整重写为 Rust。官方核心不进入 GitHub 源码或 Release 安装包，由使用者在 WebUI 中从官网下载。
@@ -22,7 +26,7 @@
 | 异常退出 | 依赖 App 的后台保活与恢复机制 | root 看护进程、OOM 优先级保护、核心和管理服务自动恢复 |
 | 安装条件 | 可直接安装 APK 使用 | 需要 ARM64、KernelSU root、可用 TUN 和模块 WebUI |
 
-当前重点支持 IPv4 客户端/服务端组网：识别码连接、同账号在线设备、手机作为服务端、自动运行设置、流量显示、诊断和日志。WebUI 默认青色主题，可在设置中切换动态配色、自定义颜色及深浅模式。后台保护不能保证任何系统、网络条件下都永远在线；已完成的真机测试范围见 [VALIDATION.md](VALIDATION.md)。
+目前提供 IPv4 客户端和服务端模式、识别码连接、同账号设备列表、自动启动设置、流量显示、诊断和日志；服务端连接问题仍在排查中。WebUI 默认青色，可切换动态配色、自定义颜色和深浅模式。连接与后台恢复是否正常取决于设备和网络，已完成的测试见 [VALIDATION.md](VALIDATION.md)。
 
 ## 安装与首次使用
 
@@ -104,7 +108,7 @@ pwsh -File .\build.ps1 -Tests -Toolchain 1.99.1-x86_64-pc-windows-gnu
 
 已在 Xiaomi 2203121C / ARM64 真机上完成与官方 Windows 测试端的双向组网传输、24 MiB 数据校验、重启恢复、管理服务和核心强杀恢复，以及真实 KernelSU WebUI 操作。详细速度、恢复时间、测试条件与边界见 [VALIDATION.md](VALIDATION.md)。
 
-这些结果来自一台设备和当前网络。跨公网、蜂窝切换、不同 NAT 环境与长时间待机不在本次已完成测试范围内。
+这些结果来自一台设备和同一网络，不能说明其他手机或网络也能正常连接。跨公网、移动数据、网络切换、不同 NAT 环境和长时间待机都还没有充分测试。项目仍在排查和补测，遇到问题请先看诊断结果，再提交反馈。
 
 反馈时请提供模块版本、Android/内核/管理器版本、手机角色、诊断结果和脱敏日志。删除账号、密码、识别码及其他私有信息后再提交 Issue。
 

@@ -90,7 +90,7 @@
     $('theme-source').value = theme.source; $('theme-mode').value = theme.mode;
     $('theme-color').value = theme.color; $('theme-hex').value = theme.color;
     $('theme-custom').hidden = theme.source !== 'custom';
-    $('theme-hint').textContent = theme.source === 'system' ? dynamic ? '已应用管理器动态配色，外观自动保存。' : '管理器未提供动态配色，当前使用青色。' : '外观设置保存在本机，修改后立即生效。';
+    $('theme-hint').textContent = theme.source === 'system' ? dynamic ? '使用管理器提供的颜色。设置自动保存。' : '管理器没有提供动态配色，已使用默认青色。' : '修改后立即生效，并保存在本机。';
   }
   function saveTheme(update) {
     theme = { ...theme, ...update };
@@ -143,7 +143,7 @@
         delete window[callback];
         error ? reject(error) : resolve(result);
       };
-      const timer = setTimeout(() => finish(new Error('模块响应超时。操作可能仍在后台执行，请查看运行状态。')), 3800);
+      const timer = setTimeout(() => finish(new Error('服务响应超时，操作可能仍在进行。请刷新状态。')), 3800);
       window[callback] = (errno, stdout, stderr) => finish(null, { errno: Number(errno) || 0, stdout: String(stdout || ''), stderr: String(stderr || '') });
       try {
         const returned = api.exec(command, '{}', callback);
@@ -161,8 +161,8 @@
     const operation = requestQueue.then(async () => {
       const result = await exec(NPCTL + ' request --b64 ' + payload);
       let data;
-      try { data = JSON.parse(result.stdout.trim()); } catch (_) { throw new Error(clean(result.stderr || '模块没有返回有效状态。')); }
-      if (!data || typeof data !== 'object') throw new Error('模块返回的状态格式无效。');
+      try { data = JSON.parse(result.stdout.trim()); } catch (_) { throw new Error(clean(result.stderr || '无法读取服务状态。')); }
+      if (!data || typeof data !== 'object') throw new Error('服务返回的数据格式有误。');
       if (data.core && typeof data.core === 'object') { core = { ...core, ...data.core }; coreLoaded = true; }
       if (data.state && typeof data.state === 'object') Object.assign(state, data.state);
       if (data.settings && typeof data.settings === 'object') {
@@ -170,7 +170,7 @@
         populateSettings();
       }
       render();
-      if (data.ok === false || result.errno !== 0) throw new Error(clean(data.error || '操作未成功，请查看诊断。'));
+      if (data.ok === false || result.errno !== 0) throw new Error(clean(data.error || '操作失败，请查看诊断。'));
       return data;
     });
     requestQueue = operation.catch(() => {});
@@ -226,12 +226,12 @@
   }
   function renderCore() {
     const missing = coreMissing();
-    const phase = core.downloading ? core.phase === 'verifying' ? '校验中' : core.phase === 'installing' ? '准备中' : '下载中' : core.phase === 'error' ? '下载未完成' : core.installed && core.verified ? '已就绪' : coreLoaded ? '尚未安装' : '读取中';
+    const phase = core.downloading ? core.phase === 'verifying' ? '校验中' : core.phase === 'installing' ? '安装中' : '下载中' : core.phase === 'error' ? '操作失败' : core.installed && core.verified ? '已安装' : coreLoaded ? '尚未安装' : '读取中';
     document.querySelectorAll('[data-core-setup]').forEach(card => { card.hidden = !missing; });
     document.querySelectorAll('[data-core-phase]').forEach(element => { element.textContent = phase; });
     document.querySelectorAll('[data-core-progress]').forEach(element => { element.hidden = !core.downloading; element.removeAttribute('value'); });
     const downloaded = Number(core.bytes_downloaded) > 0 ? ' · 已下载 ' + bytes(core.bytes_downloaded) : '';
-    const message = core.downloading ? (core.phase === 'verifying' ? '正在校验官方文件' : core.phase === 'installing' ? '正在准备核心' : '正在从皎月连官网下载') + downloaded : core.error ? '修正网络问题后，可以重新下载。' : missing ? '仅下载官方原始程序，成功后自动恢复运行。' : '官方核心已通过原始 SHA256 校验。';
+    const message = core.downloading ? (core.phase === 'verifying' ? '正在校验文件' : core.phase === 'installing' ? '正在安装核心' : '正在从皎月连官网下载') + downloaded : core.error ? '下载未完成，请查看下方错误后重试。' : missing ? '下载完成后即可登录使用。' : '文件校验通过。';
     document.querySelectorAll('[data-core-state]').forEach(element => { element.textContent = message; });
     document.querySelectorAll('[data-core-error]').forEach(element => { element.hidden = !core.error; element.textContent = clean(core.error); });
     document.querySelectorAll('[data-core-download]').forEach(button => { button.textContent = core.downloading ? '正在下载…' : core.phase === 'error' ? '重新下载官方核心' : '下载官方核心'; });
@@ -241,34 +241,34 @@
     text('core-info-status', phase);
     text('core-info-version', installedVersion, coreLoaded ? '尚未安装' : '读取中');
     text('core-info-available-version', availableVersion, '尚未读取');
-    text('core-info-verified', !coreLoaded ? '读取中' : core.verified ? '原始文件校验通过' : core.installed ? '校验未通过' : '尚未下载');
+    text('core-info-verified', !coreLoaded ? '读取中' : core.verified ? '校验通过' : core.installed ? '校验未通过' : '尚未下载');
     text('core-info-sha', core.sha256);
     const checking = core.checking_update || coreAction === 'core-check-update';
     const updateError = core.update_error || core.error;
-    const updateMessage = checking ? '正在读取核心版本信息' : core.downloading ? message : coreAction === 'core-update' ? '正在准备核心更新' : coreAction === 'core-download' ? '正在准备核心下载' : updateError ? '核心操作未完成，可以重新检查或重试。' : core.update_available ? '发现可用核心版本，点击按钮后开始更新。' : installedVersion && availableVersion ? '当前已是推荐版本' : '点击检查核心更新，读取推荐版本信息。';
+    const updateMessage = checking ? '正在检查更新…' : core.downloading ? message : coreAction === 'core-update' ? '正在更新…' : coreAction === 'core-download' ? '正在下载…' : updateError ? '检查或更新失败，请查看下方错误。' : core.update_available ? '有新版本，可以更新。' : installedVersion && availableVersion ? '已是推荐版本' : '点击「检查更新」查看是否有新版。';
     text('core-update-state', updateMessage);
     $('core-update-error').hidden = !updateError; text('core-update-error', updateError);
     $('core-update-progress').hidden = !core.downloading; $('core-update-progress').removeAttribute('value');
-    $('core-check-update').textContent = checking ? '正在检查…' : '检查核心更新';
+    $('core-check-update').textContent = checking ? '正在检查…' : '检查更新';
     $('core-update').hidden = !core.update_available && coreAction !== 'core-update';
-    $('core-update').textContent = core.downloading || coreAction === 'core-update' ? '正在更新…' : '更新官方核心';
+    $('core-update').textContent = core.downloading || coreAction === 'core-update' ? '正在更新…' : '更新核心';
   }
   function render() {
     const connected = isConnected(), pending = isPending(), server = isServer();
-    let title = '准备连接', label = '已登录', detail = '选择在线设备，或使用识别码建立连接。';
+    let title = '连接设备', label = '已登录', detail = '选择在线设备，或输入对方的识别码。';
     if (transportError) { title = '无法读取状态'; label = '状态未知'; detail = transportError; }
-    else if (coreMissing()) { title = core.downloading ? '正在准备官方核心' : '先准备官方核心'; label = core.downloading ? '下载中' : '核心尚未就绪'; detail = core.downloading ? '下载与校验在后台继续，完成后会自动恢复已保存的设置。' : '从皎月连官网下载原始核心，准备完成后即可登录和组网。'; }
-    else if (!state.daemon && state.phase !== 'unknown') { title = '后台服务已停止'; label = '已停止'; detail = '启动后台服务后恢复登录与组网。'; }
-    else if (state.phase === 'unknown') { title = '等待模块响应'; label = '读取状态'; detail = '正在读取登录与连接状态。'; }
+    else if (coreMissing()) { title = core.downloading ? '正在下载核心' : '请先下载核心'; label = core.downloading ? '下载中' : '尚未安装'; detail = core.downloading ? '关闭页面不会中断下载，完成后自动使用已保存的设置。' : '核心从皎月连官网下载，完成后即可登录使用。'; }
+    else if (!state.daemon && state.phase !== 'unknown') { title = '后台服务已停止'; label = '已停止'; detail = '启动服务后可继续使用。'; }
+    else if (state.phase === 'unknown') { title = '正在读取状态'; label = '读取中'; detail = '正在读取后台服务状态。'; }
     else if (pending) {
-      title = ['logging-in', 'logging_in'].includes(state.phase) ? '正在登录' : ['waiting-network', 'waiting_network'].includes(state.phase) ? '等待网络恢复' : '正在建立连接';
-      label = '后台处理中'; detail = '关闭页面后仍会继续，连接结果会自动更新。';
-    } else if (server) { title = '服务端已启动'; label = '服务运行中'; detail = '本机识别码：' + String(state.code || '正在获取'); }
-    else if (connected) { title = '设备已连接'; label = '组网在线'; detail = state.tun && state.tun.ip ? '可通过虚拟局域网访问对方设备。' : '连接已建立，正在读取虚拟网卡信息。'; }
-    else if (state.error || state.phase === 'error') { title = '连接需要处理'; label = '出现错误'; detail = clean(state.error || '请打开诊断查看连接状态。'); }
-    else if (state.phase === 'client' && state.client_connected) { title = '连接待验证'; label = '会话已建立'; detail = '正在验证隧道能否传输数据。可在诊断页面查看结果。'; }
-    else if (state.phase === 'client') { title = '正在建立连接'; label = '等待对端响应'; detail = '后台会继续连接，结果会自动更新。'; }
-    else if (!state.logged_in) { title = '登录后开始组网'; label = '未登录'; detail = '保存登录状态，开机自动恢复后台服务。'; }
+      title = ['logging-in', 'logging_in'].includes(state.phase) ? '正在登录' : ['waiting-network', 'waiting_network'].includes(state.phase) ? '等待网络恢复' : '正在连接';
+      label = '处理中'; detail = '关闭页面不会中断操作。';
+    } else if (server) { title = '服务端已启动'; label = '运行中'; detail = '本机识别码：' + String(state.code || '正在获取'); }
+    else if (connected) { title = '连接成功'; label = '已连接'; detail = state.tun && state.tun.ip ? '可以通过虚拟 IP 访问对方设备。' : '正在读取虚拟网卡信息。'; }
+    else if (state.error || state.phase === 'error') { title = '连接出错'; label = '错误'; detail = clean(state.error || '请打开诊断查看原因。'); }
+    else if (state.phase === 'client' && state.client_connected) { title = '正在检查连接'; label = '会话已建立'; detail = '连接已建立，正在检查数据是否能传输。'; }
+    else if (state.phase === 'client') { title = '正在连接'; label = '等待对方响应'; detail = '连接仍在进行，状态会自动更新。'; }
+    else if (!state.logged_in) { title = '登录皎月连'; label = '未登录'; detail = '登录后可连接其他设备，或启动服务端。'; }
     text('status-title', title); text('status-label', label); text('status-detail', detail);
     text('role-chip', server ? '服务端' : settings.role === 'client' ? '客户端' : '待机');
     const downloading = coreMissing() && !!core.downloading;
@@ -280,7 +280,7 @@
     text('traffic', state.tun && state.tun.present ? bytes(state.tun.rx_bytes) + ' / ' + bytes(state.tun.tx_bytes) : '—');
     $('account-nudge').hidden = !!state.logged_in;
     $('disconnect').hidden = !connected && !pending && state.phase !== 'client';
-    text('primary-action', coreMissing() ? core.downloading ? '正在下载…' : '下载官方核心' : !state.daemon && state.phase !== 'unknown' ? '启动服务' : !state.logged_in ? '登录账号' : server ? '查看服务端' : '识别码连接');
+    text('primary-action', coreMissing() ? core.downloading ? '正在下载…' : '下载官方核心' : !state.daemon && state.phase !== 'unknown' ? '启动服务' : !state.logged_in ? '登录账号' : server ? '查看服务端' : '输入识别码');
     text('account-name', state.user || (state.logged_in ? '账号已登录' : '未登录皎月连'));
     text('account-status', state.logged_in ? '已登录' : '未登录');
     text('daemon-state', state.daemon ? '运行中' : '已停止');
@@ -289,12 +289,12 @@
     text('server-code', state.code, '— — — —'); text('server-label', server ? '服务端运行中' : '服务端未启动');
     $('server-dot').className = 'dot' + (server ? ' good' : '');
     const clients = Array.isArray(state.server_clients) ? state.server_clients : [];
-    text('client-count', clients.length + ' 台接入');
+    text('client-count', clients.length + ' 台连接');
     devices('server-clients', clients, false);
     const peers = Array.isArray(state.peers) ? state.peers : [];
     text('peer-count', peers.length + ' 台');
     devices('peers', peers, true);
-    text('last-event', state.last_event, '暂无事件');
+    text('last-event', state.last_event, '暂无记录');
     $('last-error').hidden = !state.error;
     text('last-error', state.error, '');
     renderCore();
@@ -305,7 +305,7 @@
     const fragment = document.createDocumentFragment();
     if (!rows.length) {
       const empty = document.createElement('p'); empty.className = 'empty';
-      empty.textContent = canConnect ? (state.logged_in ? '暂无在线设备' : '登录后显示在线设备') : '暂无设备接入';
+      empty.textContent = canConnect ? (state.logged_in ? '暂无在线设备' : '登录后查看设备') : '暂无设备连接';
       fragment.appendChild(empty);
     }
     for (const peer of rows.slice(0, 200)) {
@@ -319,7 +319,7 @@
       if (canConnect) {
         const button = document.createElement('button'); button.className = 'button tonal'; button.textContent = '连接'; button.type = 'button';
         button.disabled = !bridge() || actionBusy || peer.id == null;
-        button.addEventListener('click', () => runAction('connect-peer', { id: String(peer.id) }, '连接请求已提交，正在后台建立连接。'));
+        button.addEventListener('click', () => runAction('connect-peer', { id: String(peer.id) }, '正在连接…'));
         row.append(button);
       }
       fragment.appendChild(row);
@@ -362,7 +362,7 @@
     clearTimeout(pollTimer);
     pollTimer = setTimeout(async () => { await poll(); schedulePoll(); }, isPending() || coreBusy() ? 1500 : 3500);
   }
-  async function runAction(action, args = {}, message = '操作已提交。') {
+  async function runAction(action, args = {}, message = '正在处理…') {
     if (actionBusy || !bridge()) return null;
     actionBusy = true; controls();
     for (const key of ['password', 'conpwd', 'webpwd']) if (args[key]) activeSecrets.add(String(args[key]));
@@ -398,12 +398,12 @@
     if (!user || !password) return;
     $('login-password').value = '';
     $('login-error').hidden = true;
-    const data = await runAction('login', { user, password }, '登录请求已提交，正在后台验证账号。');
+    const data = await runAction('login', { user, password }, '正在登录…');
     if (data) closeLogin();
   });
   $('primary-action').addEventListener('click', () => {
     if (coreMissing()) runCoreAction('core-download');
-    else if (!state.daemon && state.phase !== 'unknown') runAction('start', {}, '后台服务正在启动。');
+    else if (!state.daemon && state.phase !== 'unknown') runAction('start', {}, '正在启动后台服务…');
     else if (!state.logged_in) openLogin();
     else if (isServer()) switchPage('server');
     else { $('code-card').scrollIntoView({ behavior: 'smooth', block: 'center' }); $('client-code').focus({ preventScroll: true }); }
@@ -413,29 +413,29 @@
     const code = $('client-code').value.trim(), password = $('client-password').value;
     if (!/^[0-9]{8}$/.test(code)) { toast('请输入 8 位数字识别码。', true); return; }
     $('client-password').value = '';
-    runAction('connect', { code, password }, '连接请求已提交，正在后台建立连接。');
+    runAction('connect', { code, password }, '正在连接…');
   });
   $('server-form').addEventListener('submit', event => {
     event.preventDefault();
     const conpwd = $('server-password').value, webpwd = $('server-web-password').value, lanip = $('server-lan').value.trim();
     if (webpwd && (webpwd.length < 6 || webpwd.length > 20)) { toast('Web 访问密码需要 6–20 位。', true); return; }
-    if (lanip && (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(lanip) || lanip.split('.').some(octet => Number(octet) > 255))) { toast('请输入有效的局域网 IPv4 地址，例如 192.168.1.10。', true); return; }
+    if (lanip && (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(lanip) || lanip.split('.').some(octet => Number(octet) > 255))) { toast('局域网地址格式有误，例如 192.168.1.10。', true); return; }
     $('server-password').value = ''; $('server-web-password').value = '';
-    runAction('server-start', { conpwd, webpwd, lanip }, '服务端启动请求已提交。');
+    runAction('server-start', { conpwd, webpwd, lanip }, '正在启动服务端…');
   });
   $('settings-form').addEventListener('input', () => { settingsDirty = true; });
   $('settings-form').addEventListener('change', () => { settingsDirty = true; });
   $('settings-form').addEventListener('submit', async event => {
     event.preventDefault();
     const updated = { ...settings, autostart: $('autostart').checked, auto_connect: $('auto-connect').checked, pcname: $('device-name').value.trim(), role: $('startup-role').value };
-    const data = await runAction('settings-save', { settings: updated }, '自动运行设置已保存。');
+    const data = await runAction('settings-save', { settings: updated }, '设置已保存。');
     if (data) { settings = { ...settings, ...updated }; settingsDirty = false; populateSettings(); }
   });
-  $('disconnect').addEventListener('click', () => runAction('disconnect', {}, '已提交断开连接。'));
-  $('server-stop').addEventListener('click', () => runAction('server-stop', {}, '已提交停止服务端。'));
-  $('logout').addEventListener('click', () => runAction('logout', {}, '已退出账号，已保存的登录信息将清除。'));
-  $('service-start').addEventListener('click', () => runAction('start', {}, '后台服务正在启动。'));
-  $('service-restart').addEventListener('click', () => runAction('restart', {}, '后台服务正在重启。'));
+  $('disconnect').addEventListener('click', () => runAction('disconnect', {}, '正在断开连接…'));
+  $('server-stop').addEventListener('click', () => runAction('server-stop', {}, '正在停止服务端…'));
+  $('logout').addEventListener('click', () => runAction('logout', {}, '已退出登录。'));
+  $('service-start').addEventListener('click', () => runAction('start', {}, '正在启动后台服务…'));
+  $('service-restart').addEventListener('click', () => runAction('restart', {}, '正在重启后台服务…'));
   $('service-stop').addEventListener('click', () => runAction('stop', {}, '后台服务已停止。'));
   $('refresh').addEventListener('click', () => poll(true));
   document.querySelectorAll('[data-core-download]').forEach(button => button.addEventListener('click', () => runCoreAction('core-download')));
@@ -445,7 +445,7 @@
     const data = await runAction('doctor', {}, '');
     if (!data) return;
     const result = data.diagnostics || data.checks || data.doctor || data.data || data.state || {};
-    const labels = { tun_device: '虚拟网卡', control_connected: '控制通道', core_running: '核心进程', logged_in: '账号登录', route: '组网路由', data_verified: '隧道数据验证', probe_ip: '验证目标地址', probe_port: '验证目标端口', dns_loopback: '本机域名解析' };
+    const labels = { tun_device: '虚拟网卡', control_connected: '控制通道', core_running: '核心进程', logged_in: '账号登录', route: '路由', data_verified: '数据连通', probe_ip: '探测地址', probe_port: '探测端口', dns_loopback: 'DNS 解析' };
     const fragment = document.createDocumentFragment();
     const entries = Array.isArray(result) ? result.map(item => [item.name || item.label || '检查项', item.ok == null ? item.value || item.message : item.ok ? '正常' : item.message || '未通过']) : Object.entries(result);
     for (const [key, value] of entries) {
@@ -456,7 +456,7 @@
       if (typeof value === 'boolean') status.className = value ? 'good' : 'bad';
       row.append(name, status); fragment.append(row);
     }
-    if (!entries.length) { const empty = document.createElement('p'); empty.className = 'diagnostic-empty'; empty.textContent = '诊断完成，暂无额外信息。'; fragment.append(empty); }
+    if (!entries.length) { const empty = document.createElement('p'); empty.className = 'diagnostic-empty'; empty.textContent = '暂无诊断结果。'; fragment.append(empty); }
     $('doctor-result').className = ''; $('doctor-result').replaceChildren(fragment);
   });
   async function loadLogs() {
