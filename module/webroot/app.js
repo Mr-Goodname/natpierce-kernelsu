@@ -316,8 +316,9 @@
       const row = document.createElement('div'); row.className = 'device';
       const avatar = document.createElement('span'); avatar.className = 'device-avatar'; avatar.textContent = canConnect ? '端' : '客';
       const info = document.createElement('div'); info.className = 'device-info';
-      const name = document.createElement('div'); name.className = 'device-name'; name.textContent = clean(peer.name || peer.pcname || '未命名设备');
-      const detail = document.createElement('div'); detail.className = 'device-id'; detail.textContent = clean(peer.ip || peer.id || peer.code || '');
+      const label = canConnect ? peer.name || peer.pcname || '未命名设备' : peer.name || (peer.id != null && String(peer.id).trim() ? '客户端 ' + peer.id : '未命名客户端');
+      const name = document.createElement('div'); name.className = 'device-name'; name.textContent = clean(label);
+      const detail = document.createElement('div'); detail.className = 'device-id'; detail.textContent = clean(canConnect ? peer.ip || peer.id || peer.code || '' : peer.addr || peer.id || '');
       info.append(name, detail); row.append(avatar, info);
       if (canConnect) {
         const button = document.createElement('button'); button.className = 'button tonal'; button.textContent = '连接'; button.type = 'button';

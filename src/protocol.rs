@@ -84,6 +84,20 @@ fn ip(value: &str) -> String {
     value.trim().parse::<Ipv4Addr>().map(|a| a.to_string()).unwrap_or_default()
 }
 
+fn add_server_client(clients: &mut Vec<ServerClient>, id: &str, addr: &str) {
+    let id = id.trim();
+    let addr = plain(addr);
+    if id.is_empty() || id.len() > 20 || !id.bytes().all(|b| b.is_ascii_digit()) || addr.is_empty() {
+        return;
+    }
+    // The core uses a session number here, not the PCID of an online peer.
+    if let Some(client) = clients.iter_mut().find(|client| client.id == id) {
+        client.addr = addr;
+    } else if clients.len() < 1024 {
+        clients.push(ServerClient { id: id.into(), addr });
+    }
+}
+
 fn settle_phase(state: &mut State) {
     state.phase = if !state.logged_in {
         "logged_out"
@@ -128,9 +142,7 @@ pub fn apply_message(raw: &str, state: &mut State) {
             if state.server_running {
                 let clients: Vec<&str> = field(&f, 5).split('|').collect();
                 for pair in clients.chunks_exact(2).take(1024) {
-                    if !pair[0].is_empty() {
-                        state.server_clients.push(ServerClient { id: plain(pair[0]), addr: plain(pair[1]) });
-                    }
+                    add_server_client(&mut state.server_clients, pair[0], pair[1]);
                 }
                 state.error = plain(field(&f, 12));
             } else {
@@ -141,6 +153,23 @@ pub fn apply_message(raw: &str, state: &mut State) {
                 state.local_ip.clear();
             }
             settle_phase(state);
+        }
+        "log" if f.len() >= 4 && state.server_running => {
+            // A role snapshot is only sent when the role changes or a control
+            // connection opens. Later joins/leaves arrive as log deltas. The
+            // final field is log HTML and is deliberately never retained.
+            match f[1] {
+                "+" => add_server_client(&mut state.server_clients, f[2], f[3]),
+                "-" if !f[2].trim().is_empty() => {
+                    let id = f[2].trim();
+                    state.server_clients.retain(|client| client.id != id);
+                }
+                "-" => {
+                    let addr = plain(f[3]);
+                    if !addr.is_empty() { state.server_clients.retain(|client| client.addr != addr); }
+                }
+                _ => {}
+            }
         }
         "pclist" if f.len() >= 6 => {
             // Metadata is aligned at the end. The connection-password slot is never retained.
@@ -258,5 +287,48 @@ mod tests {
         apply_message(&["conpc", "no"].join(SEP), &mut state);
         assert_eq!(state.error, "对方未开启服务");
         assert!(!state.client_connected);
+    }
+
+    #[test]
+    fn server_sessions_follow_snapshot_joins_and_both_leave_formats() {
+        let mut state = State::default();
+        apply_message(&["2", "u", "0", "12345678", "", "1|10.6.22.2|", "SECRET_LOG", "SECRET_CONN", "0", "", "phone", "0", ""].join(SEP), &mut state);
+        assert_eq!(state.server_clients.len(), 1);
+        apply_message(&["log", "+", "2", "10.6.22.3", "SECRET_LOG"].join(SEP), &mut state);
+        assert_eq!(state.server_clients.len(), 2);
+        apply_message(&["log", "+", "2", "10.6.22.4", "SECRET_LOG"].join(SEP), &mut state);
+        assert_eq!(state.server_clients.len(), 2);
+        assert_eq!(state.server_clients[1].addr, "10.6.22.4");
+        // Online peers and connection sessions are separate lists.
+        apply_message(&["pclist", "77", "online computer", "", "", "", "", "SECRET_CONN", "", ""].join(SEP), &mut state);
+        assert_eq!(state.server_clients.len(), 2);
+        assert!(!serde_json::to_string(&state).unwrap().contains("SECRET"));
+        apply_message(&["log", "-", "1", "", "SECRET_LOG"].join(SEP), &mut state);
+        assert_eq!(state.server_clients.len(), 1);
+        apply_message(&["log", "-", "", "10.6.22.4", "SECRET_LOG"].join(SEP), &mut state);
+        assert!(state.server_clients.is_empty());
+        assert_eq!(state.phase, "server");
+    }
+
+    #[test]
+    fn malformed_and_out_of_role_log_events_cannot_create_sessions() {
+        let mut state = State::default();
+        apply_message(&["log", "+", "1", "10.6.22.2", "ignored"].join(SEP), &mut state);
+        assert!(state.server_clients.is_empty());
+        apply_message(&["2", "u", "0", "12345678", "", ""].join(SEP), &mut state);
+        for fields in [vec!["log", "+", "1"], vec!["log", "+", "", "10.6.22.2"], vec!["log", "+", "1", ""], vec!["log", "+", "invalid", "10.6.22.2"]] {
+            apply_message(&fields.join(SEP), &mut state);
+        }
+        assert!(state.server_clients.is_empty());
+        apply_message(&["log", "+", "1", "10.6.22.2", "ignored"].join(SEP), &mut state);
+        apply_message(&["log", "+", "2", "10.6.22.2", "ignored"].join(SEP), &mut state);
+        assert_eq!(state.server_clients.len(), 2);
+        apply_message(&["log", "-", "", "", "ignored"].join(SEP), &mut state);
+        assert_eq!(state.server_clients.len(), 2);
+        apply_message(&["log", "-", "", "10.6.22.2", "ignored"].join(SEP), &mut state);
+        assert!(state.server_clients.is_empty());
+        apply_message(&["log", "+", "1", "10.6.22.2", "ignored"].join(SEP), &mut state);
+        apply_message(&["1", "u", "0", "12345678"].join(SEP), &mut state);
+        assert!(state.server_clients.is_empty());
     }
 }
