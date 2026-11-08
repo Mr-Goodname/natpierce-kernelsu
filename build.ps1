@@ -132,7 +132,7 @@ foreach ($rootFile in @('Cargo.toml','Cargo.lock','build.ps1','README.md','NOTIC
     if (-not (Test-Path -LiteralPath $path)) { throw "Required source file missing: $rootFile" }
     $sourceEntries += @{ Name="natpierce-kernelsu/$rootFile"; Path=$path; Executable=$false }
 }
-$publicExtras = @('docs/screenshots/webui.png','.github/workflows/build.yml')
+$publicExtras = @('docs/screenshots/webui.png','docs/screenshots/webui-v021.png','.github/workflows/build.yml')
 foreach ($relative in $publicExtras) {
     $path = Join-Path $projectRoot $relative
     if (-not (Test-Path -LiteralPath $path)) { throw "Required public file missing: $relative" }

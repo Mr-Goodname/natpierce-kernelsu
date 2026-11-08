@@ -5,6 +5,7 @@ static EXIT:AtomicBool=AtomicBool::new(false);
 extern "C" fn signal(_:i32){EXIT.store(true,Ordering::Relaxed)}
 type Request=(Value,mpsc::Sender<Value>);
 const PORT:u16=33472;
+const CONNECT_TIMEOUT:Duration=Duration::from_secs(90);
 fn connection_config_changed(old:&Settings,new:&Settings)->bool {
  old.role!=new.role||old.client.code!=new.client.code||old.client.peer_id!=new.client.peer_id||old.client.password!=new.client.password
  ||((old.role=="server"||new.role=="server")&&(old.server.conpwd!=new.server.conpwd||old.server.webpwd!=new.server.webpwd||old.server.lanip!=new.server.lanip))
@@ -39,7 +40,7 @@ fn prepare_identity(data:&Path,module:&Path)->io::Result<()> {
  // would prevent initialization and make PCID restoration fail on next start.
  let Some(bytes)=existing else{return Ok(())};
  let mut conf:Value=serde_json::from_slice(&bytes).map_err(io::Error::other)?;
- let object=conf.as_object_mut().ok_or_else(||io::Error::other("官方身份配置格式无效，已保留原文件"))?;
+ let object=conf.as_object_mut().ok_or_else(||io::Error::other("核心身份配置格式有误，原文件已保留"))?;
  // Preserve the official encrypted MAC and account PCID records. Only the
  // Rust manager schedules login; the core must not also auto-login.
  object.insert("Auto_login".into(),json!(false));
@@ -70,13 +71,13 @@ struct Manager {
  login_pending:Option<Instant>,connect_pending:Option<Instant>,login_retry:Instant,connect_retry:Instant,
  login_attempts:u32,connection_attempts:u32,generation:u64,started:Instant,core_retry:Instant,last_poll:Instant,
  last_route:Instant,last_probe:Instant,probe_rx:mpsc::Receiver<(u64,bool)>,probe_tx:mpsc::Sender<(u64,bool)>,probe_busy:bool,
- probe_epoch:u64,data_ok:bool,probe_verified:bool,probe_failures:u32,last_event:String,renamed:bool,server_pending:Option<Instant>,
+ probe_epoch:u64,data_ok:bool,probe_verified:bool,probe_failures:u32,last_event:String,renamed:bool,server_pending:Option<Instant>,vpn_configured:bool,
 }
 impl Manager {
  fn new(data:PathBuf,module:PathBuf,conf:Settings,account:Account)->Self {
   let now=Instant::now();let(probe_tx,probe_rx)=mpsc::channel();
   let core_installer=core::Installer::new(data.clone());
-  Self{conf,account,data,module,state:State::default(),tun:Tun::default(),core_installer,core_revision:0,core:None,core_pid:Arc::new(AtomicU32::new(0)),nat_retries:Arc::new(AtomicU64::new(0)),nat_retry_running:false,ws:None,queue:VecDeque::new(),last_send:now,login_pending:None,connect_pending:None,login_retry:now,connect_retry:now,login_attempts:0,connection_attempts:0,generation:0,started:now,core_retry:now,last_poll:now,last_route:now,last_probe:now,probe_rx,probe_tx,probe_busy:false,probe_epoch:0,data_ok:false,probe_verified:false,probe_failures:0,last_event:String::new(),renamed:false,server_pending:None}
+  Self{conf,account,data,module,state:State::default(),tun:Tun::default(),core_installer,core_revision:0,core:None,core_pid:Arc::new(AtomicU32::new(0)),nat_retries:Arc::new(AtomicU64::new(0)),nat_retry_running:false,ws:None,queue:VecDeque::new(),last_send:now,login_pending:None,connect_pending:None,login_retry:now,connect_retry:now,login_attempts:0,connection_attempts:0,generation:0,started:now,core_retry:now,last_poll:now,last_route:now,last_probe:now,probe_rx,probe_tx,probe_busy:false,probe_epoch:0,data_ok:false,probe_verified:false,probe_failures:0,last_event:String::new(),renamed:false,server_pending:None,vpn_configured:false}
  }
  fn event(&mut self,text:&str){ self.last_event=text.into(); if let Ok(mut f)=fs::OpenOptions::new().create(true).append(true).open(self.data.join("logs/manager.log")){let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();let _=writeln!(f,"{now} {text}");} }
  fn snapshot(&self)->Value {
@@ -95,7 +96,7 @@ impl Manager {
  fn persist(&self)->io::Result<()> {config::save(&self.data.join("settings.json"),&self.conf)}
  fn commit_conf(&mut self,conf:Settings)->Result<(),String> {
   conf.validate()?;
-  config::save(&self.data.join("settings.json"),&conf).map_err(|e|format!("设置未保存：{e}"))?;
+  config::save(&self.data.join("settings.json"),&conf).map_err(|e|format!("设置保存失败：{e}"))?;
   self.conf=conf;Ok(())
  }
  fn invalidate_probe(&mut self) {
@@ -118,10 +119,13 @@ impl Manager {
  }
  fn stop_core(&mut self) {
   self.core_pid.store(0,Ordering::Release);
-  self.ws=None;self.queue.clear();
+  self.clear_control();
   if let Some(mut c)=self.core.take(){let _=c.kill();let _=c.wait();}
   let _=fs::remove_file(self.data.join("run/core.pid"));
   self.state=State::default();self.tun=Tun::default();self.login_pending=None;self.connect_pending=None;self.renamed=false;self.server_pending=None;self.invalidate_probe();routes::cleanup();
+ }
+ fn clear_control(&mut self) {
+  self.ws=None;self.queue.clear();self.vpn_configured=false;
  }
  fn spawn_core(&mut self)->io::Result<()> {
   let executable=prepare_core(&self.data,&self.module)?;
@@ -139,55 +143,64 @@ impl Manager {
   let mut child=command.spawn()?;
   if let Err(error)=config::save(&self.data.join("run/core.pid"),&child.id()){let _=child.kill();let _=child.wait();return Err(error)}
   let _=fs::write(format!("/proc/{}/oom_score_adj",child.id()),"-1000");
-  let pid=child.id();self.core=Some(child);self.core_pid.store(pid,Ordering::Release);self.generation+=1;self.event("官方核心已启动");Ok(())
+  let pid=child.id();self.core=Some(child);self.core_pid.store(pid,Ordering::Release);self.generation+=1;self.event("核心已启动");Ok(())
  }
  fn enqueue(&mut self,parts:&[&str]){self.queue.push_back(parts.join(SEP))}
+ fn enable_vpn(&mut self) {
+  // The core restores this setting from its own account configuration. Select
+  // virtual-network mode explicitly, once per core, before either role starts.
+  // Re-sending the mode command can stop an existing service or connection.
+  if !self.vpn_configured{self.enqueue(&["VPN","1"]);self.vpn_configured=true;}
+ }
  fn login(&mut self){
   if self.account.user.is_empty()||self.ws.is_none()||self.login_pending.is_some(){return}
   let (u,p)=(self.account.user.clone(),self.account.password.clone());self.enqueue(&["login",&u,&p,"0","0"]);
-  self.login_pending=Some(Instant::now());self.login_attempts+=1;self.state.error.clear();self.event("正在登录，自动登录由管理服务统一调度");
+  self.login_pending=Some(Instant::now());self.login_attempts+=1;self.state.error.clear();self.event("正在登录");
  }
  fn try_connect(&mut self){
-  if self.connect_pending.is_some()||self.state.client_connected||!self.state.logged_in{return}
-  if !self.conf.client.peer_id.is_empty(){let id=self.conf.client.peer_id.clone();self.enqueue(&["conpc",&id]);}
-  else if !self.conf.client.code.is_empty(){let(code,pwd)=(self.conf.client.code.clone(),self.conf.client.password.clone());self.enqueue(&["concode",&code,&pwd]);}
+  if self.connect_pending.is_some()||self.state.client_connected||self.state.server_running||!self.state.logged_in{return}
+  if !self.conf.client.peer_id.is_empty(){let id=self.conf.client.peer_id.clone();self.enable_vpn();self.enqueue(&["conpc",&id]);}
+  else if !self.conf.client.code.is_empty(){let(code,pwd)=(self.conf.client.code.clone(),self.conf.client.password.clone());self.enable_vpn();self.enqueue(&["concode",&code,&pwd]);}
   else{return}
-  self.connect_pending=Some(Instant::now());self.connection_attempts+=1;self.state.error.clear();self.event("连接请求已提交，等待官方核心完成打洞");
+  self.connect_pending=Some(Instant::now());self.connection_attempts+=1;self.state.error.clear();self.event("正在连接");
+ }
+ fn connection_expired(&self,now:Instant)->bool {
+  self.connect_pending.is_some_and(|started|now.saturating_duration_since(started)>=CONNECT_TIMEOUT)
  }
  fn handle(&mut self,v:Value)->Result<Value,String> {
-  let action=v["action"].as_str().ok_or("缺少 action")?;
+  let action=v["action"].as_str().ok_or("请求中缺少操作名称")?;
   let text=|name:&str|v[name].as_str().unwrap_or("").to_owned();
   match action {
    "status"=>{},
    "core-status"=>{self.core_installer.refresh();},
    "core-download"=>{
     self.core_installer.refresh();
-    let info=self.core_installer.request_download().map_err(|e|format!("无法开始官方核心下载：{e}"))?;
+    let info=self.core_installer.request_download().map_err(|e|format!("无法下载核心：{e}"))?;
     self.core_retry=Instant::now();
-    self.event(if info.downloading{"官方核心下载已提交，后台将校验并安装"}else{"官方核心已经安装并通过校验"});
+    self.event(if info.downloading{"正在下载核心，完成后自动校验和安装"}else{"核心已安装，文件校验通过"});
    },
    "core-check-update"=>{
     self.core_installer.refresh();
-    let info=self.core_installer.request_check_update().map_err(|e|format!("无法开始核心更新检查：{e}"))?;
-    self.event(if info.checking_update{"核心更新检查已提交"}else{"官方核心已有操作正在进行"});
+    let info=self.core_installer.request_check_update().map_err(|e|format!("无法检查核心更新：{e}"))?;
+    self.event(if info.checking_update{"正在检查核心更新"}else{"核心操作正在进行，请稍候"});
    },
    "core-update"=>{
     self.core_installer.refresh();
-    let info=self.core_installer.request_update().map_err(|e|format!("无法开始官方核心升级：{e}"))?;
-    self.event(if info.downloading{"官方核心升级已提交，安装后将恢复保存的登录与连接"}else{"当前核心已是推荐版本，或已有操作正在进行"});
+    let info=self.core_installer.request_update().map_err(|e|format!("无法更新核心：{e}"))?;
+    self.event(if info.downloading{"正在更新核心"}else{"已是推荐版本，或已有任务在运行"});
    },
    "login"=>{
     let (user,password)=(text("user").trim().to_owned(),text("password"));
     if user.is_empty()||password.is_empty()||!config::field(&user,64)||!config::field(&password,128){return Err("请输入有效账号和密码".into())}
-    let account=Account{user,password};config::save(&self.data.join("account.json"),&account).map_err(|e|format!("登录信息未保存：{e}"))?;
-    self.account=account;self.restart_core();self.login_attempts=0;self.event("已保存登录信息，准备登录");
+    let account=Account{user,password};config::save(&self.data.join("account.json"),&account).map_err(|e|format!("账号保存失败：{e}"))?;
+    self.account=account;self.restart_core();self.login_attempts=0;self.event("账号已保存");
    },
    "logout"=>{
     let cleared=clear_account_file(&self.data);
     self.account=Account::default();self.restart_core();
     let mut conf=self.conf.clone();conf.role="idle".into();conf.auto_connect=false;let committed=self.commit_conf(conf);
-    cleared.map_err(|e|format!("连接已停止，但保存的登录信息未能删除：{e}"))?;committed?;
-    self.event("已退出并删除保存的登录信息");
+    cleared.map_err(|e|format!("已停止连接，但账号信息删除失败：{e}"))?;committed?;
+    self.event("已退出登录，并清除保存的账号");
    },
    "connect"|"connect-peer"=>{
     let mut conf=self.conf.clone();conf.role="client".into();conf.auto_connect=true;
@@ -196,26 +209,26 @@ impl Manager {
     self.commit_conf(conf)?;
     // A fresh core/control channel prevents queued commands or late replies for
     // the previous target from being attributed to this connection request.
-    self.restart_core();self.connection_attempts=0;self.event("已保存连接目标，准备连接");
+    self.restart_core();self.connection_attempts=0;self.event("连接设置已保存");
    },
-   "disconnect"=>{let mut conf=self.conf.clone();conf.role="idle".into();conf.auto_connect=false;self.commit_conf(conf)?;self.restart_core();self.event("已断开，自动重连已关闭");},
+   "disconnect"=>{let mut conf=self.conf.clone();conf.role="idle".into();conf.auto_connect=false;self.commit_conf(conf)?;self.restart_core();self.event("已断开连接，自动重连已关闭");},
    "server-start"=>{
     let mut conf=self.conf.clone();conf.role="server".into();
     for key in ["conpwd","webpwd","lanip"]{let val=text(key);if !val.is_empty(){match key{"conpwd"=>conf.server.conpwd=val,"webpwd"=>conf.server.webpwd=val,_=>conf.server.lanip=val}}}
-    conf.validate()?;if conf.server.conpwd.is_empty()||conf.server.webpwd.is_empty(){return Err("请设置连接密码和管理密码".into())}
-    self.commit_conf(conf)?;self.restart_core();self.event("已保存服务端配置");
+    conf.validate()?;if conf.server.conpwd.is_empty()||conf.server.webpwd.is_empty(){return Err("请设置连接密码和 Web 访问密码".into())}
+    self.commit_conf(conf)?;self.restart_core();self.event("服务端设置已保存");
    },
-   "server-stop"=>{let mut conf=self.conf.clone();conf.role="idle".into();self.commit_conf(conf)?;self.restart_core();self.event("服务端停止请求已提交");},
+   "server-stop"=>{let mut conf=self.conf.clone();conf.role="idle".into();self.commit_conf(conf)?;self.restart_core();self.event("正在停止服务端");},
    "settings-save"=>{
     let mut merged=serde_json::to_value(&self.conf).unwrap();merge(&mut merged,&v["settings"]);
-    let conf:Settings=serde_json::from_value(merged).map_err(|_|"设置格式无效")?;
+    let conf:Settings=serde_json::from_value(merged).map_err(|_|"设置格式有误")?;
     let restart=connection_config_changed(&self.conf,&conf);
     let probe_changed=self.conf.probe_ip!=conf.probe_ip||self.conf.probe_port!=conf.probe_port;
     self.commit_conf(conf)?;if restart{self.restart_core()}else if probe_changed{self.invalidate_probe()}
     self.renamed=false;self.event("设置已保存");
    },
-   "restart"=>{self.restart_core();self.event("核心重启请求已提交");},
-   "stop"=>{fs::write(self.data.join("stop"),"").map_err(|e|e.to_string())?;self.invalidate_probe();EXIT.store(true,Ordering::Relaxed);self.event("管理服务正在停止");},
+   "restart"=>{self.restart_core();self.event("正在重启核心");},
+   "stop"=>{fs::write(self.data.join("stop"),"").map_err(|e|e.to_string())?;self.invalidate_probe();EXIT.store(true,Ordering::Relaxed);self.event("正在停止后台服务");},
    "doctor"=>{let mut out=self.snapshot();out["diagnostics"]=json!({"tun_device":std::path::Path::new("/dev/net/tun").exists(),"control_connected":self.ws.is_some(),"core_running":self.core.is_some(),"logged_in":self.state.logged_in,"route":self.tun.routed,"data_verified":self.data_ok,"probe_ip":self.conf.probe_ip,"probe_port":self.conf.probe_port,"dns_loopback":Command::new("ss").args(["-lnu"]).output().ok().is_some_and(|o|String::from_utf8_lossy(&o.stdout).contains("127.0.0.1:53"))});return Ok(out)},
    "logs"=>{let kind=if text("kind")=="core"{"core"}else{"manager"};let data=fs::read_to_string(self.data.join(format!("logs/{kind}.log"))).unwrap_or_default();let lines:Vec<_>=data.lines().rev().take(100).collect();return Ok(json!({"ok":true,"text":lines.into_iter().rev().collect::<Vec<_>>().join("\n")}))},
    _=>return Err("未知操作".into())
@@ -225,10 +238,10 @@ impl Manager {
  fn tick(&mut self){
   let now=Instant::now();
   let revision=self.core_installer.revision();
-  if revision!=self.core_revision{self.core_revision=revision;self.restart_core();self.event("官方核心文件已更新，正在恢复保存的登录与连接");}
-  if self.core.as_mut().is_some_and(|c|c.try_wait().ok().flatten().is_some()) {self.stop_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.state.error="官方核心已退出，正在恢复".into();self.event("检测到官方核心退出");}
+  if revision!=self.core_revision{self.core_revision=revision;self.restart_core();self.event("核心已更新，正在恢复登录和连接");}
+  if self.core.as_mut().is_some_and(|c|c.try_wait().ok().flatten().is_some()) {self.stop_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.state.error="核心已退出，正在重启".into();self.event("核心已退出，正在重启");}
   if self.core.is_none()&&self.core_installer.status().verified&&now>=self.core_retry{if let Err(e)=self.spawn_core(){self.core_installer.refresh();self.state.error=format!("核心启动失败：{e}");self.core_retry=now+Duration::from_secs(10)}else{self.core_retry=now+Duration::from_secs(1)}}
-  if self.ws.is_none()&&self.core.is_some()&&now>=self.core_retry{match Ws::connect(PORT){Ok(ws)=>{self.ws=Some(ws);self.event("官方控制通道已连接");self.login_retry=now+Duration::from_secs(1)},Err(_)=>self.core_retry=now+Duration::from_secs(2)}}
+  if self.ws.is_none()&&self.core.is_some()&&now>=self.core_retry{match Ws::connect(PORT){Ok(ws)=>{self.ws=Some(ws);self.event("已连接核心");self.login_retry=now+Duration::from_secs(1)},Err(_)=>self.core_retry=now+Duration::from_secs(2)}}
   let incoming=match self.ws.as_mut(){Some(w)=>w.poll(),None=>Ok(Vec::new())};
   match incoming {
    Ok(messages)=>for message in messages {
@@ -237,25 +250,25 @@ impl Manager {
     if connected!=self.state.client_connected||ip!=self.state.local_ip{self.invalidate_probe();}
     if old&&!self.state.logged_in {
      let error=self.state.error.clone();self.restart_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.state.error=error;
-     self.event("账号连接已断开，重新建立控制与登录状态");break;
+     self.event("登录连接已断开，正在重新登录");break;
     }
-    if self.state.logged_in&&!old{self.login_pending=None;self.login_attempts=0;self.event("账号登录成功");self.enqueue(&["pclist",""])}
+    if self.state.logged_in&&!old{self.login_pending=None;self.login_attempts=0;self.event("登录成功");self.enqueue(&["pclist",""])}
     if self.state.server_running{self.server_pending=None;}
     if serving&&!self.state.server_running&&self.conf.role=="server" {
      self.restart_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;
-     self.state.error="服务端已停止，正在恢复".into();self.event("检测到服务端停止，重新建立登录与服务");break;
+     self.state.error="服务端已停止，正在重新启动".into();self.event("服务端已停止，正在重新启动");break;
     }
-    if self.state.client_connected{if self.connect_pending.take().is_some(){self.event("官方核心报告连接建立，开始检查隧道数据")}self.connect_retry=now+Duration::from_secs(30);}
-    if matches!(kind,"info"|"tips"|"0")&&self.login_pending.is_some()&&!self.state.logged_in&&!self.state.error.is_empty(){self.login_pending=None;self.login_retry=now+Duration::from_secs((self.login_attempts as u64*5).clamp(5,60));self.event("官方核心报告登录失败，将按退避间隔重试");}
-    if message.starts_with("conerr")||message.starts_with("conpc<$!$>no"){self.connect_pending=None;self.connect_retry=now+Duration::from_secs(30);self.event("官方核心拒绝连接，错误已显示");}
-    if kind=="discon" {self.connect_pending=None;self.connect_retry=now+Duration::from_secs(3);self.event("官方核心报告连接断开，等待重新连接");}
+    if self.state.client_connected{if self.connect_pending.take().is_some(){self.event("连接已建立，正在检查数据是否连通")}self.connect_retry=now+Duration::from_secs(30);}
+    if matches!(kind,"info"|"tips"|"0")&&self.login_pending.is_some()&&!self.state.logged_in&&!self.state.error.is_empty(){self.login_pending=None;self.login_retry=now+Duration::from_secs((self.login_attempts as u64*5).clamp(5,60));self.event("登录失败，稍后重试");}
+    if message.starts_with("conerr")||message.starts_with("conpc<$!$>no"){self.connect_pending=None;self.connect_retry=now+Duration::from_secs(30);self.event("连接被拒绝，30 秒后重试");}
+    if kind=="discon" {self.connect_pending=None;self.connect_retry=now+Duration::from_secs(3);self.event("连接已断开，等待重连");}
    },
-   Err(_)=>{self.stop_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.state.error="控制通道断开，正在恢复".into();self.event("控制通道断开，重新启动官方核心");}
+   Err(_)=>{self.stop_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.state.error="与核心的连接已断开，正在重试".into();self.event("与核心的连接已断开，正在重启核心");}
   }
-  if self.login_pending.is_some_and(|t|t.elapsed()>Duration::from_secs(30)){self.restart_core();self.core_retry=now+Duration::from_secs(10);self.login_retry=self.core_retry;self.state.error="登录超时，等待重试".into();self.event("登录等待超时，重新启动核心以结束旧请求");}
+  if self.login_pending.is_some_and(|t|t.elapsed()>Duration::from_secs(30)){self.restart_core();self.core_retry=now+Duration::from_secs(10);self.login_retry=self.core_retry;self.state.error="登录超时，等待重试".into();self.event("登录超时，正在重启核心");}
   if self.server_pending.is_some_and(|t|t.elapsed()>Duration::from_secs(30)) {
    self.restart_core();self.core_retry=now+Duration::from_secs(10);self.login_retry=self.core_retry;
-   self.state.error="服务端启动超时，等待重试".into();self.event("服务端启动等待超时，重新启动核心以结束旧请求");
+   self.state.error="服务端启动超时，等待重试".into();self.event("服务端启动超时，正在重启核心");
   }
   if self.ws.is_some()&&!self.state.logged_in&&now>=self.login_retry{self.login()}
   if self.state.logged_in&&self.ws.is_some(){
@@ -263,20 +276,20 @@ impl Manager {
    if now.duration_since(self.last_poll)>Duration::from_secs(10){self.enqueue(&["pclist",""]);self.last_poll=now;}
    if self.conf.role=="server"&&!self.state.server_running&&self.server_pending.is_none() {
     let(c,w,ip)=(self.conf.server.conpwd.clone(),self.conf.server.webpwd.clone(),self.conf.server.lanip.clone());
-    if !c.is_empty()&&!w.is_empty(){self.enqueue(&["VPN","1"]);self.enqueue(&["startServer",&c,"0",&w,&ip]);self.server_pending=Some(now);self.event("服务端启动请求已提交");}
+    if !c.is_empty()&&!w.is_empty(){self.enable_vpn();self.enqueue(&["startServer",&c,"0",&w,&ip]);self.server_pending=Some(now);self.event("正在启动服务端");}
    }
    if self.conf.role=="client"&&self.conf.auto_connect&&!self.state.server_running&&now>=self.connect_retry {self.try_connect()}
   }
-  if self.connect_pending.is_some_and(|t|t.elapsed()>Duration::from_secs(30)){self.restart_core();self.connect_retry=now+Duration::from_secs(30);self.state.error="连接等待超时，30 秒后重试".into();self.event("连接等待超时，重新启动核心以结束旧请求");}
-  if self.ws.is_some()&&now.duration_since(self.last_send)>Duration::from_millis(500){if let Some(msg)=self.queue.pop_front(){let failed=self.ws.as_mut().unwrap().send(&msg).is_err();self.last_send=now;if failed{self.restart_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.state.error="控制通道写入失败，正在恢复".into();self.event("控制通道写入失败，重新启动官方核心");}}}
+  if self.connection_expired(now){self.restart_core();self.connect_retry=now+Duration::from_secs(30);self.state.error="连接超时，30 秒后重试".into();self.event("连接超时，正在重启核心");}
+  if self.ws.is_some()&&now.duration_since(self.last_send)>Duration::from_millis(500){if let Some(msg)=self.queue.pop_front(){let failed=self.ws.as_mut().unwrap().send(&msg).is_err();self.last_send=now;if failed{self.restart_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.state.error="向核心发送命令失败，正在重试".into();self.event("命令发送失败，正在重启核心");}}}
   if now.duration_since(self.last_route)>Duration::from_secs(2){let tun=routes::reconcile();if self.tun.ip!=tun.ip||self.tun.routed!=tun.routed{self.invalidate_probe();}self.tun=tun;self.last_route=now;}
   for _ in 0..16 {
    let Ok((epoch,ok))=self.probe_rx.try_recv()else{break};
-   if self.record_probe(epoch,ok){self.restart_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.connect_retry=self.core_retry;self.state.error="隧道连续三次探测失败，正在恢复".into();self.event("已验证的隧道连续三次探测失败，重新建立连接");break;}
+   if self.record_probe(epoch,ok){self.restart_core();self.core_retry=now+Duration::from_secs(3);self.login_retry=self.core_retry;self.connect_retry=self.core_retry;self.state.error="连续三次连接检查失败，正在重连".into();self.event("连续三次连接检查失败，正在重连");break;}
   }
   if self.state.client_connected&&self.tun.routed&&!self.probe_busy&&now.duration_since(self.last_probe)>Duration::from_secs(15){
    self.probe_busy=true;self.last_probe=now;let(ip,port,tx,epoch)=(self.conf.probe_ip.clone(),self.conf.probe_port,self.probe_tx.clone(),self.probe_epoch);
-   if thread::Builder::new().name("np-tunnel-probe".into()).spawn(move||{let ok=if port!=0{format!("{ip}:{port}").parse().ok().is_some_and(|address|std::net::TcpStream::connect_timeout(&address,Duration::from_secs(3)).is_ok())}else{Command::new("ping").args(["-c","1","-W","2",&ip]).output().is_ok_and(|o|o.status.success())};let _=tx.send((epoch,ok));}).is_err(){self.probe_busy=false;self.event("隧道探测线程未能启动");}
+   if thread::Builder::new().name("np-tunnel-probe".into()).spawn(move||{let ok=if port!=0{format!("{ip}:{port}").parse().ok().is_some_and(|address|std::net::TcpStream::connect_timeout(&address,Duration::from_secs(3)).is_ok())}else{Command::new("ping").args(["-c","1","-W","2",&ip]).output().is_ok_and(|o|o.status.success())};let _=tx.send((epoch,ok));}).is_err(){self.probe_busy=false;self.event("连接检查启动失败");}
   }
  }
 }
@@ -301,9 +314,9 @@ pub fn run(data:PathBuf,module:PathBuf)->io::Result<()> {
  let conf=config::read(&data.join("settings.json"));let account=config::read(&data.join("account.json"));
  let mut m=Manager::new(data,module,conf,account);
  m.conf.validate().map_err(io::Error::other)?;m.persist()?;routes::protect_control(true);
- match nat_retry::start(m.core_pid.clone()){Ok(count)=>{m.nat_retries=count;m.nat_retry_running=true;},Err(e)=>m.event(&format!("NAT 探测补偿未启动：{e}"))}
- if let Err(e)=dns::start(){m.event(&format!("DNS 转发未启动：{e}"))}
- m.event("Rust 管理服务已启动");let mut saved=Instant::now();
+ match nat_retry::start(m.core_pid.clone()){Ok(count)=>{m.nat_retries=count;m.nat_retry_running=true;},Err(e)=>m.event(&format!("NAT 探测重试启动失败：{e}"))}
+ if let Err(e)=dns::start(){m.event(&format!("DNS 转发启动失败：{e}"))}
+ m.event("后台服务已启动");let mut saved=Instant::now();
  while !EXIT.load(Ordering::Relaxed)&&!m.data.join("stop").exists()&&!m.data.join("safe_mode").exists()&&!m.module.join("disable").exists()&&!m.module.join("remove").exists(){
   for(v,reply)in rx.try_iter().take(16){let result=m.handle(v).unwrap_or_else(|e|json!({"ok":false,"error":e}));let _=reply.send(result);}
   m.tick();if saved.elapsed()>Duration::from_secs(2){let _=config::save(&m.data.join("run/state.json"),&m.snapshot());let _=fs::set_permissions(m.data.join("core/data/config"),fs::Permissions::from_mode(0o600));saved=Instant::now();}
@@ -329,6 +342,51 @@ mod tests {
  fn manager(data:PathBuf)->Manager {Manager::new(data,PathBuf::from("/unused-test-module"),Settings::default(),Account::default())}
  fn connected_manager()->Manager {
   let mut m=manager(PathBuf::from("/unused-test-data"));m.conf.role="client".into();m.state.logged_in=true;m.state.client_connected=true;m.tun.routed=true;m
+ }
+
+ #[test]
+ fn client_selects_virtual_network_before_code_or_peer_connection() {
+  for by_peer in [false,true] {
+   let mut m=manager(PathBuf::from("/unused-test-data"));m.state.logged_in=true;
+   if by_peer{m.conf.client.peer_id="fixture-peer".into();}else{m.conf.client.code="87654321".into();m.conf.client.password="fixture-password".into();}
+   m.try_connect();
+   let expected=if by_peer{["conpc","fixture-peer"].join(SEP)}else{["concode","87654321","fixture-password"].join(SEP)};
+   assert_eq!(m.queue,VecDeque::from([["VPN","1"].join(SEP),expected]));
+   assert!(m.connect_pending.is_some());assert_eq!(m.connection_attempts,1);
+   m.try_connect();assert_eq!(m.queue.len(),2);assert_eq!(m.connection_attempts,1);
+  }
+ }
+
+ #[test]
+ fn retry_preserves_mode_but_new_core_selects_it_again() {
+  let mut m=manager(PathBuf::from("/unused-test-data"));m.state.logged_in=true;m.conf.client.code="87654321".into();
+  m.try_connect();m.queue.clear();m.connect_pending=None;
+  m.try_connect();assert_eq!(m.queue,VecDeque::from([["concode","87654321",""].join(SEP)]));
+  m.clear_control();m.connect_pending=None;
+  m.try_connect();assert_eq!(m.queue.front(),Some(&["VPN","1"].join(SEP)));assert_eq!(m.queue.len(),2);
+ }
+
+ #[test]
+ fn existing_session_server_or_missing_target_cannot_change_mode() {
+  for condition in ["connected","server","logged-out","no-target"] {
+   let mut m=manager(PathBuf::from("/unused-test-data"));m.state.logged_in=true;m.conf.client.code="87654321".into();
+   match condition {
+    "connected"=>m.state.client_connected=true,
+    "server"=>m.state.server_running=true,
+    "logged-out"=>m.state.logged_in=false,
+    _=>m.conf.client.code.clear(),
+   }
+   m.try_connect();assert!(m.queue.is_empty());assert!(!m.vpn_configured);assert!(m.connect_pending.is_none());
+  }
+ }
+
+ #[test]
+ fn connection_waits_for_full_deadline_and_cancellation_clears_it() {
+  let mut m=manager(PathBuf::from("/unused-test-data"));let started=Instant::now();m.connect_pending=Some(started);
+  assert!(!m.connection_expired(started+Duration::from_secs(30)));
+  assert!(!m.connection_expired(started+Duration::from_secs(89)));
+  assert!(m.connection_expired(started+Duration::from_secs(90)));
+  m.connect_pending=None;assert!(!m.connection_expired(started+Duration::from_secs(120)));
  }
 
  #[test]

@@ -173,7 +173,11 @@ pub fn apply_message(raw: &str, state: &mut State) {
                 state.error.clear();
                 settle_phase(state);
             } else if f[1].trim().eq_ignore_ascii_case("no") {
-                state.error = plain(field(&f, 3));
+                // Official versions emit either [no, reason] or [no, id, reason].
+                // Preserve the actual rejection instead of turning a three-field
+                // firewall/NAT error into an unrelated "service not started" hint.
+                let reason = if f.len() >= 4 { field(&f, 3) } else { field(&f, 2) };
+                state.error = plain(reason);
                 if state.error.is_empty() { state.error = "对方未开启服务".into(); }
             }
         }
@@ -241,5 +245,18 @@ mod tests {
         apply_message(&["info", "登录错误：连接超时"].join(SEP), &mut state);
         assert_eq!(state.error, "登录错误：连接超时");
         assert!(!state.logged_in);
+    }
+
+    #[test]
+    fn connection_rejection_retains_both_official_message_formats() {
+        let mut state = State::default();
+        let blocked = "连接被阻断！请检查网络或防火墙。";
+        apply_message(&["conpc", "no", blocked].join(SEP), &mut state);
+        assert_eq!(state.error, blocked);
+        apply_message(&["conpc", "no", "peer-id", "密码错误"].join(SEP), &mut state);
+        assert_eq!(state.error, "密码错误");
+        apply_message(&["conpc", "no"].join(SEP), &mut state);
+        assert_eq!(state.error, "对方未开启服务");
+        assert!(!state.client_connected);
     }
 }
