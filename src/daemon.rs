@@ -10,6 +10,16 @@ fn connection_config_changed(old:&Settings,new:&Settings)->bool {
  old.role!=new.role||old.client.code!=new.client.code||old.client.peer_id!=new.client.peer_id||old.client.password!=new.client.password
  ||((old.role=="server"||new.role=="server")&&(old.server.conpwd!=new.server.conpwd||old.server.webpwd!=new.server.webpwd||old.server.lanip!=new.server.lanip))
 }
+fn server_start_settings(saved:&Settings,request:&Value)->Result<Settings,String> {
+ let mut conf=saved.clone();conf.role="server".into();
+ for key in ["conpwd","webpwd","lanip"] {
+  let value=request[key].as_str().unwrap_or("");
+  if !value.is_empty(){match key{"conpwd"=>conf.server.conpwd=value.into(),"webpwd"=>conf.server.webpwd=value.into(),_=>conf.server.lanip=value.into()}}
+ }
+ conf.validate()?;
+ if conf.server.conpwd.is_empty()||conf.server.webpwd.is_empty(){return Err("请设置连接密码和 Web 访问密码".into())}
+ Ok(conf)
+}
 fn clear_account_file(data:&Path)->io::Result<()> {
  let path=data.join("account.json");
  // If unlink fails, a successfully replaced empty file still retains no password.
@@ -172,6 +182,7 @@ impl Manager {
   let text=|name:&str|v[name].as_str().unwrap_or("").to_owned();
   match action {
    "status"=>{},
+   "server-settings"=>return Ok(self.conf.server_settings()),
    "core-status"=>{self.core_installer.refresh();},
    "core-download"=>{
     self.core_installer.refresh();
@@ -213,9 +224,7 @@ impl Manager {
    },
    "disconnect"=>{let mut conf=self.conf.clone();conf.role="idle".into();conf.auto_connect=false;self.commit_conf(conf)?;self.restart_core();self.event("已断开连接，自动重连已关闭");},
    "server-start"=>{
-    let mut conf=self.conf.clone();conf.role="server".into();
-    for key in ["conpwd","webpwd","lanip"]{let val=text(key);if !val.is_empty(){match key{"conpwd"=>conf.server.conpwd=val,"webpwd"=>conf.server.webpwd=val,_=>conf.server.lanip=val}}}
-    conf.validate()?;if conf.server.conpwd.is_empty()||conf.server.webpwd.is_empty(){return Err("请设置连接密码和 Web 访问密码".into())}
+    let conf=server_start_settings(&self.conf,&v)?;
     self.commit_conf(conf)?;self.restart_core();self.event("服务端设置已保存");
    },
    "server-stop"=>{let mut conf=self.conf.clone();conf.role="idle".into();self.commit_conf(conf)?;self.restart_core();self.event("正在停止服务端");},
@@ -411,6 +420,55 @@ mod tests {
   m.probe_epoch=7;m.generation=9;m.conf.pcname="original".into();
   let result=m.handle(json!({"action":"settings-save","settings":{"role":"client","client":{"code":"87654321"},"pcname":"changed"}}));
   assert!(result.is_err());assert_eq!(m.conf.role,"idle");assert_eq!(m.conf.pcname,"original");assert!(m.conf.client.code.is_empty());assert_eq!(m.generation,9);assert_eq!(m.probe_epoch,7);
+ }
+
+ #[test]
+ fn server_passwords_require_explicit_read_and_do_not_change_live_state() {
+  let dir=TestDir::new();let mut m=manager(dir.0.clone());
+  m.conf.client.password="fixture-client-secret".into();m.conf.server.conpwd="fixture-connection-secret".into();m.conf.server.webpwd="fixture-web-secret".into();
+  m.account.password="fixture-account-secret".into();m.conf.server.lanip="192.168.1.10".into();
+  m.generation=17;m.probe_epoch=8;m.last_event="unchanged".into();m.queue.push_back("fixture-command".into());
+  let private=m.handle(json!({"action":"server-settings"})).unwrap();
+  assert_eq!(private,json!({"ok":true,"server":{"conpwd":"fixture-connection-secret","webpwd":"fixture-web-secret","lanip":"192.168.1.10"}}));
+  assert_eq!(m.generation,17);assert_eq!(m.probe_epoch,8);assert_eq!(m.conf.role,"idle");assert_eq!(m.last_event,"unchanged");assert_eq!(m.queue,VecDeque::from(["fixture-command".to_owned()]));
+  assert!(!dir.0.join("logs/manager.log").exists());
+  for action in ["status","doctor","logs"] {
+   let public=m.handle(json!({"action":action})).unwrap();let text=public.to_string();
+   for secret in ["fixture-client-secret","fixture-connection-secret","fixture-web-secret","fixture-account-secret"]{assert!(!text.contains(secret));}
+   if action!="logs" {
+    assert_eq!(public["settings"]["server"]["has_password"],true);assert_eq!(public["settings"]["server"]["has_web_password"],true);
+    assert!(public["settings"]["server"].get("conpwd").is_none());assert!(public["settings"]["server"].get("webpwd").is_none());
+   }
+  }
+ }
+
+ #[test]
+ fn empty_server_start_fields_reuse_both_passwords_after_settings_reload() {
+  let dir=TestDir::new();let mut saved=Settings::default();
+  saved.server.conpwd="fixture-saved-connection".into();saved.server.webpwd="fixture-saved-web".into();saved.server.lanip="192.168.1.10".into();
+  config::save(&dir.0.join("settings.json"),&saved).unwrap();
+  let mut m=Manager::new(dir.0.clone(),PathBuf::from("/unused-test-module"),config::read(&dir.0.join("settings.json")),Account::default());
+  let next=server_start_settings(&m.conf,&json!({"action":"server-start","conpwd":"","webpwd":"","lanip":""})).unwrap();
+  assert_eq!(next.role,"server");assert_eq!(next.server.conpwd,saved.server.conpwd);assert_eq!(next.server.webpwd,saved.server.webpwd);assert_eq!(next.server.lanip,saved.server.lanip);
+  // Persist the same prepared configuration used by the real action, without
+  // starting a core or changing the test device's global network rules.
+  m.commit_conf(next).unwrap();let reloaded:Settings=config::read(&dir.0.join("settings.json"));
+  let changed=server_start_settings(&reloaded,&json!({"action":"server-start","conpwd":"fixture-new-connection"})).unwrap();
+  assert_eq!(changed.server.conpwd,"fixture-new-connection");assert_eq!(changed.server.webpwd,saved.server.webpwd);
+  assert!(server_start_settings(&Settings::default(),&json!({"action":"server-start"})).is_err());
+ }
+
+ #[test]
+ fn failed_server_start_save_keeps_old_passwords_and_role() {
+  let dir=TestDir::new();let mut m=manager(dir.0.clone());
+  m.conf.server.conpwd="fixture-original-connection".into();m.conf.server.webpwd="fixture-original-web".into();m.generation=19;m.probe_epoch=6;
+  m.persist().unwrap();let saved=fs::read(dir.0.join("settings.json")).unwrap();
+  fs::create_dir(dir.0.join("settings.tmp")).unwrap();
+  let result=m.handle(json!({"action":"server-start","conpwd":"fixture-new-connection","webpwd":"fixture-new-web"}));
+  let error=result.unwrap_err();
+  assert_eq!(m.conf.role,"idle");assert_eq!(m.conf.server.conpwd,"fixture-original-connection");assert_eq!(m.conf.server.webpwd,"fixture-original-web");assert_eq!(m.generation,19);assert_eq!(m.probe_epoch,6);
+  assert_eq!(fs::read(dir.0.join("settings.json")).unwrap(),saved);
+  for secret in ["fixture-original-connection","fixture-original-web","fixture-new-connection","fixture-new-web"]{assert!(!error.contains(secret));}
  }
 
  #[test]

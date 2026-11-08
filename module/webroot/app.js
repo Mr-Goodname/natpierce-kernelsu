@@ -1,4 +1,4 @@
-/* Local-only KernelSU bridge. No credentials or server data enter HTML markup. */
+/* Root-local KernelSU bridge. Passwords use masked controls, never browser storage. */
 'use strict';
 (() => {
   const NPCTL = '/data/adb/modules/natpierce_rs/bin/npctl';
@@ -6,6 +6,8 @@
   const state = { daemon: false, core_running: false, logged_in: false, phase: 'unknown', tun: {}, peers: [], server_clients: [] };
   let core = { installed: false, verified: false, downloading: false, phase: 'unknown', version: '', installed_version: '', available_version: '', update_available: false, checking_update: false, update_error: '', bytes_downloaded: 0, error: '' }, coreLoaded = false, coreAction = '';
   let settings = { autostart: true, auto_connect: true, role: 'idle', pcname: '', client: {}, server: {} };
+  const serverDirty = new Set();
+  let serverSettingsPending = null, serverSettingsLoaded = false, serverSettingsEpoch = 0;
   let page = 'connect', logKind = 'daemon', requestQueue = Promise.resolve(), statusPending = false;
   let actionBusy = false, settingsDirty = false, settingsLoaded = false, pollTimer, toastTimer, counter = 0, transportError = '';
   const activeSecrets = new Set();
@@ -219,6 +221,7 @@
     document.querySelectorAll('[data-core-download]').forEach(button => { button.disabled = unavailable || coreBusy(); });
     $('core-check-update').disabled = unavailable || coreBusy();
     $('core-update').disabled = unavailable || coreBusy() || !core.update_available || coreMissing();
+    if (serverSettingsPending) $('server-form').querySelector('button[type="submit"]').disabled = true;
     if (coreMissing()) {
       document.querySelectorAll('#connect-form button[type="submit"], #server-form button[type="submit"], [data-login], .device button').forEach(button => { button.disabled = true; });
       $('primary-action').disabled = unavailable || coreBusy();
@@ -334,9 +337,45 @@
     $('startup-role').value = ['client', 'server'].includes(settings.role) ? settings.role : 'idle';
     if (!settingsLoaded) {
       $('client-code').value = settings.client.code || '';
-      $('server-lan').value = settings.server.lanip || '';
+      if (!serverDirty.has('server-lan')) $('server-lan').value = settings.server.lanip || '';
     }
     settingsLoaded = true;
+  }
+  function serverPasswordHints() {
+    $('server-password').required = !settings.server.has_password;
+    $('server-web-password').required = !settings.server.has_web_password;
+    $('server-password').placeholder = settings.server.has_password ? '已保存，留空沿用' : '设置连接本机的密码';
+    $('server-web-password').placeholder = settings.server.has_web_password ? '已保存，留空沿用' : '6–20 位';
+  }
+  function loadServerSettings() {
+    if (serverSettingsPending) return serverSettingsPending;
+    if (!bridge()) return Promise.resolve(false);
+    const epoch = serverSettingsEpoch;
+    text('server-settings-note', '正在读取已保存的设置…');
+    const pending = request('server-settings').then(data => {
+      if (epoch !== serverSettingsEpoch) return false;
+      const saved = data.server;
+      if (!saved || typeof saved.conpwd !== 'string' || typeof saved.webpwd !== 'string' || typeof saved.lanip !== 'string') throw new Error('无法读取服务端设置，请刷新后重试。');
+      for (const key of ['conpwd', 'webpwd']) if (saved[key]) activeSecrets.add(saved[key]);
+      for (const [id, key] of [['server-password', 'conpwd'], ['server-web-password', 'webpwd'], ['server-lan', 'lanip']]) {
+        if (!serverDirty.has(id)) $(id).value = saved[key];
+      }
+      settings.server.has_password = !!saved.conpwd;
+      settings.server.has_web_password = !!saved.webpwd;
+      serverPasswordHints();
+      serverSettingsLoaded = true;
+      text('server-settings-note', saved.conpwd && saved.webpwd ? '密码已保存。再次启动时无需重填，留空也会沿用。' : '设置两个密码后，点击保存并启动。');
+      return true;
+    }).catch(error => {
+      if (epoch === serverSettingsEpoch) { text('server-settings-note', clean(error.message)); toast(error.message, true); }
+      return false;
+    }).finally(() => {
+      if (serverSettingsPending === pending) serverSettingsPending = null;
+      controls();
+    });
+    serverSettingsPending = pending;
+    controls();
+    return pending;
   }
   function switchPage(view) {
     page = view;
@@ -347,6 +386,7 @@
       if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
     });
     window.scrollTo({ top: 0, behavior: 'auto' });
+    if (view === 'server') loadServerSettings();
   }
   async function poll(manual = false) {
     if (statusPending || actionBusy || !bridge() || document.hidden && !manual) return;
@@ -368,6 +408,15 @@
     for (const key of ['password', 'conpwd', 'webpwd']) if (args[key]) activeSecrets.add(String(args[key]));
     try {
       transportError = '';
+      if (action === 'server-start' && !state.daemon) {
+        await request('start');
+        const deadline = Date.now() + 6000;
+        while (!state.daemon && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+          await request('status');
+        }
+        if (!state.daemon) throw new Error('后台服务未能启动，请到诊断页面查看日志。');
+      }
       const data = await request(action, args);
       if (message) toast(message);
       return data;
@@ -415,13 +464,19 @@
     $('client-password').value = '';
     runAction('connect', { code, password }, '正在连接…');
   });
-  $('server-form').addEventListener('submit', event => {
+  $('server-form').addEventListener('input', event => { if (event.target.id) serverDirty.add(event.target.id); });
+  $('server-form').addEventListener('submit', async event => {
     event.preventDefault();
     const conpwd = $('server-password').value, webpwd = $('server-web-password').value, lanip = $('server-lan').value.trim();
     if (webpwd && (webpwd.length < 6 || webpwd.length > 20)) { toast('Web 访问密码需要 6–20 位。', true); return; }
     if (lanip && (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(lanip) || lanip.split('.').some(octet => Number(octet) > 255))) { toast('局域网地址格式有误，例如 192.168.1.10。', true); return; }
-    $('server-password').value = ''; $('server-web-password').value = '';
-    runAction('server-start', { conpwd, webpwd, lanip }, '正在启动服务端…');
+    const data = await runAction('server-start', { conpwd, webpwd, lanip }, '设置已保存，正在启动服务端…');
+    if (data) {
+      for (const [id, value] of [['server-password', conpwd], ['server-web-password', webpwd], ['server-lan', lanip]]) {
+        if ($(id).value === value) serverDirty.delete(id);
+      }
+      await loadServerSettings();
+    }
   });
   $('settings-form').addEventListener('input', () => { settingsDirty = true; });
   $('settings-form').addEventListener('change', () => { settingsDirty = true; });
@@ -437,7 +492,7 @@
   $('service-start').addEventListener('click', () => runAction('start', {}, '正在启动后台服务…'));
   $('service-restart').addEventListener('click', () => runAction('restart', {}, '正在重启后台服务…'));
   $('service-stop').addEventListener('click', () => runAction('stop', {}, '后台服务已停止。'));
-  $('refresh').addEventListener('click', () => poll(true));
+  $('refresh').addEventListener('click', () => { poll(true); if (page === 'server') loadServerSettings(); });
   document.querySelectorAll('[data-core-download]').forEach(button => button.addEventListener('click', () => runCoreAction('core-download')));
   $('core-check-update').addEventListener('click', () => runCoreAction('core-check-update'));
   $('core-update').addEventListener('click', () => runCoreAction('core-update'));
@@ -472,8 +527,12 @@
     document.querySelectorAll('[data-log]').forEach(item => { item.classList.toggle('selected', item === button); item.setAttribute('aria-pressed', String(item === button)); });
     loadLogs();
   }));
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { applyTheme(); poll(); schedulePoll(); } });
-  window.addEventListener('pagehide', () => { clearTimeout(pollTimer); activeSecrets.clear(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { applyTheme(); poll(); schedulePoll(); if (page === 'server' && !serverSettingsLoaded) loadServerSettings(); } });
+  window.addEventListener('pagehide', () => {
+    clearTimeout(pollTimer); serverSettingsEpoch++; serverSettingsPending = null; serverSettingsLoaded = false; serverDirty.clear();
+    $('server-password').value = ''; $('server-web-password').value = ''; activeSecrets.clear();
+  });
+  window.addEventListener('pageshow', event => { if (event.persisted && page === 'server') loadServerSettings(); });
   $('bridge-notice').hidden = !!bridge();
   initTheme();
   render();

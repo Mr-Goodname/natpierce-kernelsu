@@ -40,7 +40,10 @@ pub fn save<T: Serialize>(path:&Path,value:&T)->io::Result<()> {
 }
 pub fn field(s:&str,max:usize)->bool { s.len()<=max && !s.contains("<$!$>") && !s.chars().any(|c|c.is_control()) }
 impl Settings {
-    pub fn public(&self)->Value { json!({"autostart":self.autostart,"role":self.role,"auto_connect":self.auto_connect,"pcname":self.pcname,"client":{"code":self.client.code,"peer_id":self.client.peer_id,"has_password":!self.client.password.is_empty()},"server":{"lanip":self.server.lanip,"has_password":!self.server.conpwd.is_empty()},"probe_ip":self.probe_ip,"probe_port":self.probe_port}) }
+    pub fn public(&self)->Value { json!({"autostart":self.autostart,"role":self.role,"auto_connect":self.auto_connect,"pcname":self.pcname,"client":{"code":self.client.code,"peer_id":self.client.peer_id,"has_password":!self.client.password.is_empty()},"server":{"lanip":self.server.lanip,"has_password":!self.server.conpwd.is_empty(),"has_web_password":!self.server.webpwd.is_empty()},"probe_ip":self.probe_ip,"probe_port":self.probe_port}) }
+    // Only the explicit root-local server-settings request returns these fields.
+    // Keep passwords out of routine snapshots and the persisted run/state.json.
+    pub fn server_settings(&self)->Value {json!({"ok":true,"server":self.server})}
     pub fn validate(&self)->Result<(),String> {
         if !["idle","client","server"].contains(&self.role.as_str()){return Err("角色无效".into())}
         if !field(&self.pcname,64)||!field(&self.client.password,128)||!field(&self.server.conpwd,128)||!field(&self.server.webpwd,128){return Err("字段包含非法字符或过长".into())}

@@ -1,6 +1,7 @@
 id=natpierce_rs
 name=皎月连 · Rust 常驻服务
-version=v0.2.1
-versionCode=201
+version=v0.2.2
+versionCode=202
 author=Chimiko · AI contributors
 description=Rust 常驻管理；动态取色与自定义主题、登录持久化、开机自启、内核 TUN；官方核心由用户在 WebUI 下载
+updateJson=https://raw.githubusercontent.com/Mr-Goodname/natpierce-kernelsu/main/update.json

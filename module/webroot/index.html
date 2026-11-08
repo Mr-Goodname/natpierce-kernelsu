@@ -50,6 +50,7 @@
         <label class="field"><span>连接密码</span><input id="server-password" type="password" maxlength="128" placeholder="设置连接本机的密码" autocomplete="new-password" required></label>
         <label class="field"><span>Web 访问密码</span><input id="server-web-password" type="password" minlength="6" maxlength="20" placeholder="6–20 位" autocomplete="new-password" required></label>
         <label class="field"><span>局域网地址 <span class="optional">可选</span></span><input id="server-lan" type="text" maxlength="15" placeholder="例如 192.168.1.10" autocomplete="off"><small>填写本机的局域网 IPv4 地址。</small></label>
+        <p class="form-note" id="server-settings-note" role="status">密码保存在本机，重新打开此页面时自动填写。</p>
         <button class="button filled full" type="submit">保存并启动服务端</button>
       </form><button class="button tonal full" id="server-stop">停止服务端</button></article>
       <article class="card"><div class="card-heading"><h2>已连接设备</h2></div><div class="device-list" id="server-clients"><p class="empty">暂无设备连接</p></div></article>

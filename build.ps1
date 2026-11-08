@@ -1,6 +1,8 @@
 param(
     [switch]$SkipBuild,
     [switch]$Tests,
+    [switch]$SyncUpdateMetadata,
+    [switch]$CheckMetadata,
     [string]$CargoPath,
     [string]$RustcPath,
     [string]$LinkerPath,
@@ -16,6 +18,47 @@ $toolchainVersion = '1.99.1'
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Read-ReleaseMetadata {
+    $metadata = [IO.File]::ReadAllText((Join-Path $moduleRoot 'module.prop'))
+    $moduleId = [regex]::Match($metadata,'(?m)^id=([a-zA-Z0-9_]+)\r?$').Groups[1].Value
+    $moduleVersion = [regex]::Match($metadata,'(?m)^version=(v?\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.-]+)?)\r?$').Groups[1].Value
+    $codeText = [regex]::Match($metadata,'(?m)^versionCode=([1-9][0-9]*)\r?$').Groups[1].Value
+    $moduleVersionCode = 0
+    if (-not $moduleId -or -not $moduleVersion -or -not [int]::TryParse($codeText,[ref]$moduleVersionCode)) { throw 'Invalid module release metadata' }
+    $packageVersion = [regex]::Match([IO.File]::ReadAllText((Join-Path $projectRoot 'Cargo.toml')),'(?ms)^\[package\]\s*.*?^version\s*=\s*"([^"]+)"').Groups[1].Value
+    $lockVersion = [regex]::Match([IO.File]::ReadAllText((Join-Path $projectRoot 'Cargo.lock')),'(?m)^name = "natpierce-rs"\r?\nversion = "([^"]+)"').Groups[1].Value
+    if ($moduleVersion.TrimStart('v') -cne $packageVersion -or $packageVersion -cne $lockVersion) { throw 'module.prop, Cargo.toml and Cargo.lock versions must agree' }
+
+    $repoUrl = 'https://github.com/Mr-Goodname/natpierce-kernelsu'
+    $rawUrl = 'https://raw.githubusercontent.com/Mr-Goodname/natpierce-kernelsu/main'
+    $updateUrl = [regex]::Match($metadata,'(?m)^updateJson=([^\r\n]+)\r?$').Groups[1].Value
+    if ($updateUrl -cne "$rawUrl/update.json") { throw 'module.prop updateJson must point to the published module update feed' }
+    $changelogPath = Join-Path $projectRoot 'changelog.md'
+    if (-not (Test-Path -LiteralPath $changelogPath)) { throw 'changelog.md is required for module updates' }
+    if ([IO.File]::ReadAllText($changelogPath) -notmatch ('(?m)^#\s+'+[regex]::Escape($moduleVersion)+'\s*$')) { throw 'changelog.md must name the current module version in its heading' }
+    $expected = [ordered]@{
+        version=$moduleVersion
+        versionCode=$moduleVersionCode
+        zipUrl="$repoUrl/releases/download/$moduleVersion/${moduleId}_${moduleVersion}.zip"
+        changelog="$rawUrl/changelog.md"
+    }
+    $updatePath = Join-Path $projectRoot 'update.json'
+    if ($SyncUpdateMetadata) {
+        # Explicit generation keeps the checked-in feed in sync without silently
+        # changing the source tree during an ordinary or CI build.
+        $json = ($expected | ConvertTo-Json -Depth 3).Replace("`r`n","`n")+"`n"
+        [IO.File]::WriteAllText($updatePath,$json,[Text.UTF8Encoding]::new($false))
+    }
+    if (-not (Test-Path -LiteralPath $updatePath)) { throw 'update.json is missing; run build.ps1 -SyncUpdateMetadata -CheckMetadata' }
+    $update = [IO.File]::ReadAllText($updatePath) | ConvertFrom-Json -AsHashtable
+    if ($update.Count -ne $expected.Count -or @($update.Keys | Where-Object { $_ -cnotin $expected.Keys }).Count -gt 0) { throw 'update.json must contain version, versionCode, zipUrl and changelog' }
+    if (($update.versionCode -isnot [int] -and $update.versionCode -isnot [long]) -or $update.versionCode -ne $moduleVersionCode) { throw 'update.json versionCode must be the same integer as module.prop' }
+    foreach ($key in @('version','zipUrl','changelog')) {
+        if ($update[$key] -isnot [string] -or $update[$key] -cne $expected[$key]) { throw "update.json $key does not match the current release; run build.ps1 -SyncUpdateMetadata -CheckMetadata" }
+    }
+    return @{Id=$moduleId;Version=$moduleVersion;VersionCode=$moduleVersionCode}
 }
 
 function Assert-Arm64Static([string]$Path) {
@@ -86,7 +129,7 @@ function Add-ZipFile($Zip,[string]$Name,[string]$Path,[bool]$Executable) {
     if ($attributes -gt [int]::MaxValue) { $attributes -= [int64]0x100000000 }
     $entry.ExternalAttributes = [int]$attributes
     $bytes = [IO.File]::ReadAllBytes($Path)
-    if ($Name -match '\.(sh|prop|html|css|js|svg|md|txt|toml|lock|rs|ps1)$' -or $Name.EndsWith('/.gitignore')) {
+    if ($Name -match '\.(sh|prop|html|css|js|svg|md|txt|json|toml|lock|rs|ps1)$' -or $Name.EndsWith('/.gitignore')) {
         $text = [Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xfeff).Replace("`r`n","`n")
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
     }
@@ -104,14 +147,17 @@ function Write-Zip([string]$Path,$Entries) {
     } finally { $file.Dispose() }
 }
 
+$releaseMetadata = Read-ReleaseMetadata
+if ($CheckMetadata) {
+    Write-Output "Module update metadata verified: $($releaseMetadata.Version), versionCode $($releaseMetadata.VersionCode)"
+    return
+}
 if (-not $SkipBuild) { Compile-Manager }
 if (-not (Test-Path -LiteralPath $managerBinary)) { throw 'Missing module/bin/npctl; build first' }
 Assert-Arm64Static $managerBinary
 
-$metadata = [IO.File]::ReadAllText((Join-Path $moduleRoot 'module.prop'))
-$moduleId = [regex]::Match($metadata,'(?m)^id=([a-zA-Z0-9_]+)\r?$').Groups[1].Value
-$moduleVersion = [regex]::Match($metadata,'(?m)^version=([a-zA-Z0-9._-]+)\r?$').Groups[1].Value
-if (-not $moduleId -or -not $moduleVersion) { throw 'Invalid module metadata' }
+$moduleId = $releaseMetadata.Id
+$moduleVersion = $releaseMetadata.Version
 
 $moduleEntries = @()
 $sourceEntries = @()
@@ -127,12 +173,12 @@ foreach ($file in (Get-ChildItem -LiteralPath $moduleRoot -File -Recurse)) {
 foreach ($required in $allowedModuleFiles) {
     if ($required -notin $moduleEntries.Name) { throw "Required module file missing: $required" }
 }
-foreach ($rootFile in @('Cargo.toml','Cargo.lock','build.ps1','README.md','NOTICE.md','VALIDATION.md','LICENSE','THIRD_PARTY_LICENSES.md','core-manifest.json','.gitignore')) {
+foreach ($rootFile in @('Cargo.toml','Cargo.lock','build.ps1','README.md','NOTICE.md','VALIDATION.md','LICENSE','THIRD_PARTY_LICENSES.md','core-manifest.json','update.json','changelog.md','.gitignore')) {
     $path = Join-Path $projectRoot $rootFile
     if (-not (Test-Path -LiteralPath $path)) { throw "Required source file missing: $rootFile" }
     $sourceEntries += @{ Name="natpierce-kernelsu/$rootFile"; Path=$path; Executable=$false }
 }
-$publicExtras = @('docs/screenshots/webui.png','docs/screenshots/webui-v021.png','.github/workflows/build.yml')
+$publicExtras = @('docs/screenshots/webui.png','docs/screenshots/webui-v021.png','docs/screenshots/server-v022.png','.github/workflows/build.yml')
 foreach ($relative in $publicExtras) {
     $path = Join-Path $projectRoot $relative
     if (-not (Test-Path -LiteralPath $path)) { throw "Required public file missing: $relative" }

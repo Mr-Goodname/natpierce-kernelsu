@@ -12,6 +12,14 @@ use std::{fs,io::{self,Read,Write},os::unix::net::UnixStream,path::{Path,PathBuf
 fn root()->PathBuf { std::env::var_os("NP_DATA").map(PathBuf::from).unwrap_or_else(||"/data/adb/natpierce-rs".into()) }
 fn module()->PathBuf {std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().to_owned()}
 fn print(v:Value){println!("{}",v)}
+fn stored_server_settings(data:&Path)->io::Result<Value> {
+    let conf=match fs::read(data.join("settings.json")) {
+        Ok(bytes)=>serde_json::from_slice::<config::Settings>(&bytes).map_err(|_|io::Error::new(io::ErrorKind::InvalidData,"服务端设置文件格式有误"))?,
+        Err(e) if e.kind()==io::ErrorKind::NotFound=>config::Settings::default(),
+        Err(e)=>return Err(e),
+    };
+    Ok(conf.server_settings())
+}
 fn request(v:Value)->io::Result<Value> {
     let mut s=UnixStream::connect(root().join("run/control.sock"))?;
     s.set_read_timeout(Some(Duration::from_secs(3)))?;s.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -87,6 +95,9 @@ fn main(){
     match request(v.clone()) {
         Ok(out)=>print(out),
         Err(e)=>{
+            if v["action"]=="server-settings" {
+                print(match stored_server_settings(&root()){Ok(out)=>out,Err(e)=>json!({"ok":false,"error":format!("读取服务端设置失败：{e}")})});return;
+            }
             let conf:config::Settings=config::read(&root().join("settings.json"));
             let error=if matches!(v["action"].as_str(),Some("core-download"|"core-check-update"|"core-update")){"请先启动管理服务，再管理官方核心".to_owned()}else{format!("管理服务未响应：{e}")};
             print(json!({"ok":v["action"]=="status"||v["action"]=="core-status","error":error,"core":core::inspect(&root()),"settings":conf.public(),"state":{"daemon":false,"core_running":false,"logged_in":false,"phase":"stopped"}}));
@@ -97,6 +108,8 @@ fn main(){
 #[cfg(test)]
 mod shutdown_tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    static NEXT:AtomicUsize=AtomicUsize::new(0);
     #[test]
     fn executable_identity_accepts_only_the_same_module_path(){
         let expected=Path::new("/data/adb/modules/natpierce_rs/bin/npctl");
@@ -104,5 +117,23 @@ mod shutdown_tests {
         assert!(matches_executable(Path::new("/data/adb/modules/natpierce_rs/bin/npctl (deleted)"),expected));
         assert!(!matches_executable(Path::new("/data/local/tmp/npctl"),expected));
         assert!(!matches_executable(Path::new("/data/adb/modules/another/bin/npctl"),expected));
+    }
+
+    #[test]
+    fn stopped_server_settings_read_saved_passwords_and_reject_broken_storage(){
+        let data=std::env::temp_dir().join(format!("np-stopped-settings-test-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        fs::create_dir_all(&data).unwrap();
+        let result=(|| {
+            let fresh=stored_server_settings(&data).unwrap();assert_eq!(fresh["server"]["conpwd"],"");assert_eq!(fresh["server"]["webpwd"],"");
+            let mut settings=config::Settings::default();settings.server.conpwd="fixture-stopped-connection".into();settings.server.webpwd="fixture-stopped-web".into();settings.client.password="fixture-hidden-client".into();
+            config::save(&data.join("settings.json"),&settings).unwrap();
+            let response=stored_server_settings(&data).unwrap();assert_eq!(response,settings.server_settings());assert!(!response.to_string().contains("fixture-hidden-client"));
+            assert!(!data.join("run/control.sock").exists());assert!(!data.join("run/state.json").exists());
+            fs::write(data.join("settings.json"),b"{broken fixture-secret-in-malformed-settings").unwrap();
+            let error=stored_server_settings(&data).unwrap_err();assert_eq!(error.kind(),io::ErrorKind::InvalidData);assert!(!error.to_string().contains("fixture-secret-in-malformed-settings"));
+            fs::remove_file(data.join("settings.json")).unwrap();fs::create_dir(data.join("settings.json")).unwrap();
+            assert!(stored_server_settings(&data).is_err());
+        })();
+        fs::remove_dir_all(&data).unwrap();result
     }
 }
